@@ -32,8 +32,10 @@ RDEF = Sotoportego_server.rdef
 RSRC =
 
 # Libraries to link against. libbe provides BApplication / BMessage / etc.
+# $(STDCPPLIBS) pulls in libstdc++/libsupc++ — the makefile-engine links with
+# `cc`, which does not add the C++ runtime automatically.
 # Network libraries are added in a later milestone, when real routing/DNS land.
-LIBS = be
+LIBS = be $(STDCPPLIBS)
 
 # Additional paths to directories following the standard libXXX.so layout.
 LIBPATHS =

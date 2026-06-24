@@ -31,8 +31,10 @@ RDEF = Sotoportego.rdef
 RSRC =
 
 # Libraries to link against. The GUI needs the Interface Kit (libbe) plus the
-# Layout Kit, which also lives in libbe.
-LIBS = be
+# Layout Kit, which also lives in libbe. $(STDCPPLIBS) pulls in libstdc++/
+# libsupc++ — the makefile-engine links with `cc`, which does not add the C++
+# runtime itself.
+LIBS = be $(STDCPPLIBS)
 
 # Additional paths to directories following the standard libXXX.so layout.
 LIBPATHS =

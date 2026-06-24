@@ -27,8 +27,9 @@ SRCS = \
 RDEF = Sotoportego_cli.rdef
 RSRC =
 
-# Libraries to link against.
-LIBS = be
+# Libraries to link against. $(STDCPPLIBS) pulls in libstdc++/libsupc++ — the
+# makefile-engine links with `cc`, which does not add the C++ runtime itself.
+LIBS = be $(STDCPPLIBS)
 
 # Additional paths to directories following the standard libXXX.so layout.
 LIBPATHS =
