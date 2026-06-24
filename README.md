@@ -81,8 +81,6 @@ src/backend/   Backend seam: VPNBackend interface, stub OpenVPNBackend,
 src/server/    The daemon (a BApplication / BLooper)
 src/cli/       sotoportego_cli — the test client
 src/gui/       Sotoportego — the native GUI client (daemon client)
-tests/         Host-side unit tests (BeAPI-free, run on any host)
-docs/          Design docs (see docs/GUI.md for the GUI direction)
 ```
 
 | Binary               | Signature                                   |

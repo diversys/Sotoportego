@@ -20,3 +20,8 @@ obj-*/
 # Editor / OS cruft
 *~
 .DS_Store
+
+# Local-only directories: docs/ and tests/ are kept on disk for the
+# author's workflow but are intentionally not tracked in the repo.
+/docs/
+/tests/
