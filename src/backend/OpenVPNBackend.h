@@ -6,6 +6,7 @@
 #define OPENVPN_BACKEND_H
 
 
+#include "OpenVPNManagement.h"
 #include "VPNBackend.h"
 
 class BMessageRunner;
@@ -36,6 +37,13 @@ public:
 	virtual	void				MessageReceived(BMessage* message);
 
 private:
+	// The single integration point: every connection event -- whether parsed
+	// from the real management socket or synthesized by the stub -- is mapped
+	// to state/stats here. The real reader will just call this in a loop over
+	// fManagement.Feed(bytes).
+			void				_HandleManagementEvent(
+									const OpenVPNEvent& event);
+
 			void				_SetState(VPNState state,
 									const char* detail = NULL);
 			void				_Tick();
@@ -46,6 +54,9 @@ private:
 			VPNStats			fStats;
 			VPNProfile			fProfile;
 			BMessageRunner*		fTimer;
+	// Parses bytes from the management socket into OpenVPNEvents. Unused by the
+	// stub scenario, but wired in ready for the real transport.
+			OpenVPNManagement	fManagement;
 };
 
 

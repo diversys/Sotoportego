@@ -34,7 +34,8 @@ OpenVPNBackend::OpenVPNBackend()
 	fState(VPN_STATE_DISCONNECTED),
 	fStats(),
 	fProfile(),
-	fTimer(NULL)
+	fTimer(NULL),
+	fManagement()
 {
 }
 
@@ -125,32 +126,101 @@ OpenVPNBackend::MessageReceived(BMessage* message)
 }
 
 
-// Advance the scripted state machine one step. Real backends would instead
-// react to events parsed from the OpenVPN management interface.
+// Advance the scripted scenario one step. Instead of touching state directly,
+// the stub synthesizes the OpenVPNEvents a real management socket would emit
+// and routes them through _HandleManagementEvent -- the same path the real
+// transport will use, so the integration seam is exercised today.
+//
+// TODO(milestone-2): delete this synthetic scenario. The real reader will do:
+//     std::string bytes = /* read from BSocket */;
+//     std::vector<OpenVPNEvent> events = fManagement.Feed(bytes);
+//     for (size_t i = 0; i < events.size(); i++)
+//         _HandleManagementEvent(events[i]);
 void
 OpenVPNBackend::_Tick()
 {
+	OpenVPNEvent event;
+
 	switch (fState) {
 		case VPN_STATE_CONNECTING:
-			_SetState(VPN_STATE_AUTHENTICATING);
+			event.type = OPENVPN_EVENT_STATE;
+			event.stateName = "AUTH";
+			event.mappedState = VPN_STATE_AUTHENTICATING;
+			_HandleManagementEvent(event);
 			break;
 
 		case VPN_STATE_AUTHENTICATING:
-			fStats.fConnectedSince = time(NULL);
-			_SetState(VPN_STATE_CONNECTED);
+			event.type = OPENVPN_EVENT_STATE;
+			event.stateName = "CONNECTED";
+			event.stateDetail = "SUCCESS";
+			event.localIP = "10.8.0.2";
+			event.remoteIP = fProfile.fServer.String();
+			event.mappedState = VPN_STATE_CONNECTED;
+			_HandleManagementEvent(event);
 			break;
 
 		case VPN_STATE_CONNECTED:
 		case VPN_STATE_RECONNECTING:
-			// Pretend traffic is flowing and publish a throughput update.
-			fStats.fBytesIn += kFakeBytesInPerTick;
-			fStats.fBytesOut += kFakeBytesOutPerTick;
-			NotifyStats(fStats);
+			// A cumulative bytecount notification, as openvpn would send.
+			event.type = OPENVPN_EVENT_BYTECOUNT;
+			event.bytesIn = fStats.fBytesIn + kFakeBytesInPerTick;
+			event.bytesOut = fStats.fBytesOut + kFakeBytesOutPerTick;
+			_HandleManagementEvent(event);
 			break;
 
 		default:
 			// Nothing scheduled in terminal states; stop ticking.
 			_StopTimer();
+			break;
+	}
+}
+
+
+// Map a single management-interface event onto our state/stats and notify the
+// observer. This is backend logic shared by the stub and (later) the real
+// socket reader.
+void
+OpenVPNBackend::_HandleManagementEvent(const OpenVPNEvent& event)
+{
+	switch (event.type) {
+		case OPENVPN_EVENT_STATE:
+			if (event.mappedState == VPN_STATE_CONNECTED)
+				fStats.fConnectedSince = time(NULL);
+			_SetState(event.mappedState,
+				event.stateDetail.empty() ? NULL : event.stateDetail.c_str());
+			break;
+
+		case OPENVPN_EVENT_BYTECOUNT:
+			// Bytecounts are cumulative absolute values.
+			fStats.fBytesIn = event.bytesIn;
+			fStats.fBytesOut = event.bytesOut;
+			NotifyStats(fStats);
+			break;
+
+		case OPENVPN_EVENT_PASSWORD_REQUEST:
+			// TODO(milestone-2): answer with username/password over the socket
+			// using fManagement.CommandUsername/CommandPassword.
+			printf("[OpenVPN] credentials requested for realm '%s'\n",
+				event.realm.c_str());
+			break;
+
+		case OPENVPN_EVENT_AUTH_FAILED:
+			_StopTimer();
+			_SetState(VPN_STATE_ERROR, "authentication failed");
+			break;
+
+		case OPENVPN_EVENT_FATAL:
+			_StopTimer();
+			_SetState(VPN_STATE_ERROR,
+				event.message.empty() ? "fatal error" : event.message.c_str());
+			break;
+
+		case OPENVPN_EVENT_LOG:
+		case OPENVPN_EVENT_INFO:
+			printf("[OpenVPN] %s\n", event.message.c_str());
+			break;
+
+		default:
 			break;
 	}
 }

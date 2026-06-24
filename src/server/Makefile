@@ -22,6 +22,7 @@ SRCS = \
 	SotoportegoServer.cpp \
 	../backend/VPNBackend.cpp \
 	../backend/OpenVPNBackend.cpp \
+	../backend/OpenVPNManagement.cpp \
 	../common/VPNProfile.cpp \
 	../common/VPNState.cpp \
 	../common/VPNStats.cpp
