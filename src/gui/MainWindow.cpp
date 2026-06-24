@@ -170,24 +170,26 @@ MainWindow::_BuildConnectionTab()
 	BBox* detailsBox = new BBox("detailsBox");
 	detailsBox->SetLabel("Server");
 
+	// Captions stay regular weight; values are bold so the eye lands on the
+	// data, not on the labels. Laid out as a two-column grid so each value
+	// sits on the same baseline as its caption.
 	fServerLabel = new BStringView("serverLabel", "\xe2\x80\x94");
-	BFont bigFont(be_bold_font);
-	bigFont.SetSize(bigFont.Size() * 1.2f);
-	fServerLabel->SetFont(&bigFont);
-
+	fServerLabel->SetFont(be_bold_font);
 	fBackendLabel = new BStringView("backendLabel", kBackendName);
+	fBackendLabel->SetFont(be_bold_font);
 	fProtocolLabel = new BStringView("protocolLabel", "\xe2\x80\x94");
+	fProtocolLabel->SetFont(be_bold_font);
 
-	BLayoutBuilder::Group<>(detailsBox, B_VERTICAL, B_USE_SMALL_SPACING)
+	BLayoutBuilder::Grid<>(detailsBox, B_USE_DEFAULT_SPACING,
+			B_USE_SMALL_SPACING)
 		.SetInsets(B_USE_DEFAULT_SPACING, B_USE_BIG_INSETS,
 			B_USE_DEFAULT_SPACING, B_USE_DEFAULT_SPACING)
-		.Add(new BStringView("serverCaption", "Host"))
-		.Add(fServerLabel)
-		.Add(new BStringView("backendCaption", "Backend"))
-		.Add(fBackendLabel)
-		.Add(new BStringView("protocolCaption", "Protocol"))
-		.Add(fProtocolLabel)
-		.AddGlue();
+		.Add(new BStringView("hostCaption", "Host:"), 0, 0)
+		.Add(fServerLabel, 1, 0)
+		.Add(new BStringView("backendCaption", "Backend:"), 0, 1)
+		.Add(fBackendLabel, 1, 1)
+		.Add(new BStringView("protocolCaption", "Protocol:"), 0, 2)
+		.Add(fProtocolLabel, 1, 2);
 
 	fActionButton = new BButton("actionButton", "Connect",
 		new BMessage(kMsgPrimaryAction));
