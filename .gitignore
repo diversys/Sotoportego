@@ -9,8 +9,10 @@ obj-*/
 /src/cli/sotoportego_cli
 /src/gui/Sotoportego
 
-# Host-side test runner
+# Host-side test runners
 /tests/test_runner
+/tests/test_runner_management
+/tests/test_runner_config
 
 # Compiled resources
 *.rsrc

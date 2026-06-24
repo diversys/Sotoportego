@@ -22,19 +22,22 @@ SRCS = \
 	SotoportegoApp.cpp \
 	MainWindow.cpp \
 	HeaderView.cpp \
+	../common/OpenVPNConfigParser.cpp \
 	../common/VPNProfile.cpp \
 	../common/VPNState.cpp \
 	../common/VPNStats.cpp
 
-# Resource definition files.
-RDEF = Sotoportego.rdef
-RSRC =
+# Resource definition files. NOTE: the variable read by makefile-engine is
+# RDEFS (plural); using the wrong name silently skips the resource compile.
+RDEFS = Sotoportego.rdef
+RSRCS =
 
 # Libraries to link against. The GUI needs the Interface Kit (libbe) plus the
-# Layout Kit, which also lives in libbe. $(STDCPPLIBS) pulls in libstdc++/
-# libsupc++ — the makefile-engine links with `cc`, which does not add the C++
-# runtime itself.
-LIBS = be $(STDCPPLIBS)
+# Layout Kit, which also lives in libbe. libtracker provides BFilePanel
+# (used by the .ovpn import flow). $(STDCPPLIBS) pulls in libstdc++/libsupc++
+# — the makefile-engine links with `cc`, which does not add the C++ runtime
+# itself.
+LIBS = be tracker $(STDCPPLIBS)
 
 # Additional paths to directories following the standard libXXX.so layout.
 LIBPATHS =

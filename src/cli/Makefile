@@ -23,9 +23,10 @@ SRCS = \
 	../common/VPNState.cpp \
 	../common/VPNStats.cpp
 
-# Resource definition files.
-RDEF = Sotoportego_cli.rdef
-RSRC =
+# Resource definition files. NOTE: the variable read by makefile-engine is
+# RDEFS (plural); using the wrong name silently skips the resource compile.
+RDEFS = Sotoportego_cli.rdef
+RSRCS =
 
 # Libraries to link against. $(STDCPPLIBS) pulls in libstdc++/libsupc++ — the
 # makefile-engine links with `cc`, which does not add the C++ runtime itself.

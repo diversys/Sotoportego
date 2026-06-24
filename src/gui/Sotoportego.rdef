@@ -11,3 +11,8 @@ resource app_version {
 };
 
 resource app_flags B_SINGLE_LAUNCH;
+
+// HVIF vector icon used by Tracker, Deskbar and the About dialog. The
+// `resource(101, "BEOS:ICON")` triple is the well-known location Tracker
+// looks at; #'VICN' is the four-CC type for HVIF data.
+resource(101, "BEOS:ICON") #'VICN' import "../../Sotoportego.hvif";

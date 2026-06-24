@@ -6,6 +6,9 @@
 
 #include <Bitmap.h>
 #include <Font.h>
+#include <IconUtils.h>
+
+#include "sotoportego_icon_data.h"
 
 
 // Visual constants. Match the slate/title/subtitle tones used by Mose so the
@@ -15,9 +18,8 @@ static const rgb_color kHeaderTitle		= { 245, 245, 245, 255 };
 static const rgb_color kHeaderSubtitle	= { 180, 195, 210, 255 };
 static const rgb_color kDotStroke		= { 255, 255, 255, 255 };
 
-// Logo tile (fixed brand color, independent from state).
+// Logo tile (fallback fill if HVIF rendering ever fails).
 static const rgb_color kLogoFill		= { 90, 155, 213, 255 };
-static const rgb_color kLogoGlyph		= { 255, 255, 255, 255 };
 
 // State accents, used for the small status dot overlaid on the logo tile.
 // Same family as Mose's allow/drop indicators, extended with an "in-progress"
@@ -119,31 +121,49 @@ HeaderView::Draw(BRect /*updateRect*/)
 }
 
 
+// Render the brand HVIF into a freshly allocated RGBA bitmap of `size`
+// pixels (square). Returns NULL if the icon data fails to rasterise. Caller
+// owns the bitmap.
+static BBitmap*
+_RenderHvif(float size)
+{
+	BBitmap* bitmap = new BBitmap(BRect(0, 0, size - 1, size - 1), 0,
+		B_RGBA32);
+	if (bitmap == NULL || bitmap->InitCheck() != B_OK) {
+		delete bitmap;
+		return NULL;
+	}
+	status_t result = BIconUtils::GetVectorIcon(
+		(const uint8*)kIconHvif, kIconHvifSize, bitmap);
+	if (result != B_OK) {
+		delete bitmap;
+		return NULL;
+	}
+	return bitmap;
+}
+
+
 void
 HeaderView::_DrawLogoTile(BRect rect)
 {
-	// Rounded brand-color tile.
+	BBitmap* icon = _RenderHvif(rect.Width());
+	if (icon != NULL) {
+		// Alpha-blend the icon so transparent pixels keep the slate header
+		// visible underneath.
+		SetDrawingMode(B_OP_ALPHA);
+		SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
+		DrawBitmap(icon, rect.LeftTop());
+		SetDrawingMode(B_OP_COPY);
+		delete icon;
+		return;
+	}
+
+	// Fallback: a flat brand-color rounded tile if the icon could not be
+	// rasterised for any reason. Keeps the header looking intentional rather
+	// than empty.
 	float radius = rect.Width() * 0.18f;
 	SetHighColor(kLogoFill);
 	FillRoundRect(rect, radius, radius);
-
-	// White "S" centered on the tile. The "S" stands in for a real HVIF icon
-	// until we ship one; using a bold glyph keeps the file size down and the
-	// look consistent with the rest of the (font-driven) UI.
-	BFont glyphFont(be_bold_font);
-	glyphFont.SetSize(rect.Height() * 0.62f);
-	SetFont(&glyphFont);
-
-	font_height fh;
-	glyphFont.GetHeight(&fh);
-	const char* glyph = "S";
-	float textWidth = glyphFont.StringWidth(glyph);
-	float baselineY = rect.top
-		+ (rect.Height() + fh.ascent - fh.descent) / 2.0f;
-	float baselineX = rect.left + (rect.Width() - textWidth) / 2.0f;
-
-	SetHighColor(kLogoGlyph);
-	DrawString(glyph, BPoint(baselineX, baselineY));
 }
 
 
@@ -186,70 +206,11 @@ HeaderView::PreferredSize()
 }
 
 
-// Helper view that knows how to paint the brand tile into its bounds.
-// Offscreen rendering on Haiku needs a BView attached to a BBitmap; the bitmap
-// is locked, the view's Draw() is invoked manually, then the bitmap is
-// unlocked and detached.
-namespace {
-
-class LogoRenderView : public BView {
-public:
-	LogoRenderView(BRect frame)
-		:
-		BView(frame, "logoRender", B_FOLLOW_NONE, B_WILL_DRAW)
-	{
-		SetViewColor(B_TRANSPARENT_COLOR);
-	}
-
-	void Paint()
-	{
-		BRect r = Bounds();
-
-		// Same rounded brand-color tile as the header's logo.
-		float radius = r.Width() * 0.18f;
-		SetHighColor(kLogoFill);
-		FillRoundRect(r, radius, radius);
-
-		BFont glyphFont(be_bold_font);
-		glyphFont.SetSize(r.Height() * 0.62f);
-		SetFont(&glyphFont);
-
-		font_height fh;
-		glyphFont.GetHeight(&fh);
-		const char* glyph = "S";
-		float textWidth = glyphFont.StringWidth(glyph);
-		float baselineY = r.top
-			+ (r.Height() + fh.ascent - fh.descent) / 2.0f;
-		float baselineX = r.left + (r.Width() - textWidth) / 2.0f;
-
-		SetHighColor(kLogoGlyph);
-		DrawString(glyph, BPoint(baselineX, baselineY));
-		Sync();
-	}
-};
-
-}	// namespace
-
-
 BBitmap*
 HeaderView::MakeLogoBitmap(float size)
 {
-	BRect frame(0, 0, size - 1, size - 1);
-	BBitmap* bitmap = new BBitmap(frame, B_RGBA32, true);
-	if (bitmap == NULL || bitmap->InitCheck() != B_OK) {
-		delete bitmap;
-		return NULL;
-	}
-
-	LogoRenderView* view = new LogoRenderView(frame);
-	bitmap->AddChild(view);
-	if (bitmap->Lock()) {
-		view->Paint();
-		bitmap->Unlock();
-	}
-	bitmap->RemoveChild(view);
-	delete view;
-
-	return bitmap;
+	// Same path as the header's icon rendering, so the About dialog and the
+	// header always show the same image.
+	return _RenderHvif(size);
 }
 

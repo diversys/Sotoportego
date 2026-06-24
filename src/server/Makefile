@@ -20,16 +20,19 @@ APP_MIME_SIG = application/x-vnd.VePro-SotoportegoServer
 SRCS = \
 	main.cpp \
 	SotoportegoServer.cpp \
+	ProfileStore.cpp \
 	../backend/VPNBackend.cpp \
 	../backend/OpenVPNBackend.cpp \
 	../backend/OpenVPNManagement.cpp \
+	../common/OpenVPNConfigParser.cpp \
 	../common/VPNProfile.cpp \
 	../common/VPNState.cpp \
 	../common/VPNStats.cpp
 
-# Resource definition files.
-RDEF = Sotoportego_server.rdef
-RSRC =
+# Resource definition files. NOTE: the variable read by makefile-engine is
+# RDEFS (plural); using the wrong name silently skips the resource compile.
+RDEFS = Sotoportego_server.rdef
+RSRCS =
 
 # Libraries to link against. libbe provides BApplication / BMessage / etc.
 # $(STDCPPLIBS) pulls in libstdc++/libsupc++ — the makefile-engine links with

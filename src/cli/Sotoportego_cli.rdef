@@ -11,3 +11,7 @@ resource app_version {
 };
 
 resource app_flags B_MULTIPLE_LAUNCH;
+
+// Same HVIF as the GUI so the family of binaries shares a single visual
+// identity in Tracker / Deskbar.
+resource(101, "BEOS:ICON") #'VICN' import "../../Sotoportego.hvif";

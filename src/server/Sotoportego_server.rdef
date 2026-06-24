@@ -10,4 +10,10 @@ resource app_version {
 	long_info	= "Sotoportego VPN daemon for Haiku."
 };
 
-resource app_flags B_SINGLE_LAUNCH;
+// B_BACKGROUND_APP keeps the daemon out of Deskbar / Twitcher; combined with
+// B_SINGLE_LAUNCH it runs at most once and stays invisible.
+resource app_flags B_SINGLE_LAUNCH | B_BACKGROUND_APP;
+
+// Same HVIF as the GUI so the family of binaries shares a single visual
+// identity in Tracker / Deskbar.
+resource(101, "BEOS:ICON") #'VICN' import "../../Sotoportego.hvif";
