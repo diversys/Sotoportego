@@ -1,0 +1,16 @@
+# Haiku makefile-engine build output
+objects.*/
+obj-*/
+*.o
+*.d
+
+# Built binaries
+/src/server/sotoportego_server
+/src/cli/sotoportego_cli
+
+# Compiled resources
+*.rsrc
+
+# Editor / OS cruft
+*~
+.DS_Store
