@@ -7,6 +7,10 @@ obj-*/
 # Built binaries
 /src/server/sotoportego_server
 /src/cli/sotoportego_cli
+/src/gui/Sotoportego
+
+# Host-side test runner
+/tests/test_runner
 
 # Compiled resources
 *.rsrc

@@ -57,19 +57,32 @@ in a later milestone, when real routing and DNS land. The project builds and
 runs on Haiku only.
 
 ```
-make                       # builds everything: daemon + CLI
+make                       # builds everything: daemon + CLI + GUI
 make -C src/server         # builds just the daemon
 make -C src/cli            # builds just the CLI client
+make -C src/gui            # builds just the GUI client
 make clean                 # removes all build artifacts
+```
+
+The protocol logic of the OpenVPN backend (the management-interface parser) is
+covered by host-side unit tests that build and run with a plain compiler — on
+Haiku or any other host — independently of the BeAPI:
+
+```
+make -C tests              # builds and runs the unit tests
 ```
 
 ## Layout
 
 ```
 src/common/    Shared types and wire protocol (VPNState, VPNStats, VPNProfile, VPNProtocol.h)
-src/backend/   Backend seam: VPNBackend interface + stub OpenVPNBackend
+src/backend/   Backend seam: VPNBackend interface, stub OpenVPNBackend,
+               and OpenVPNManagement (the management-interface parser)
 src/server/    The daemon (a BApplication / BLooper)
 src/cli/       sotoportego_cli — the test client
+src/gui/       Sotoportego — the native GUI client (daemon client)
+tests/         Host-side unit tests (BeAPI-free, run on any host)
+docs/          Design docs (see docs/GUI.md for the GUI direction)
 ```
 
 | Binary               | Signature                                   |
