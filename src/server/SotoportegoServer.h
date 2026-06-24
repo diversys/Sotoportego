@@ -11,6 +11,7 @@
 #include <Application.h>
 #include <Messenger.h>
 
+#include "ProfileStore.h"
 #include "VPNState.h"
 
 class VPNBackend;
@@ -41,6 +42,8 @@ private:
 			void				_HandleSubscribe(BMessage* message);
 			void				_HandleUnsubscribe(BMessage* message);
 			void				_HandleGetStatus(BMessage* message);
+			void				_HandleSaveProfile(BMessage* message);
+			void				_HandleDeleteProfile(BMessage* message);
 
 	// Re-broadcast a backend event (state or stats) to every subscribed
 	// client, pruning any that have gone away.
@@ -49,9 +52,15 @@ private:
 	// Build a fresh status snapshot from the backend.
 			void				_FillStatus(BMessage* message);
 
+	// Build and broadcast a kMsgListProfiles snapshot. Sent to a specific
+	// client on subscribe and to everyone after a profile-store mutation.
+			void				_SendProfileList(BMessenger to) const;
+			void				_BroadcastProfileList();
+
 			BMessenger			_ClientFrom(BMessage* message) const;
 
 			VPNBackend*				fBackend;
+			ProfileStore			fProfiles;
 			std::vector<BMessenger>	fClients;
 };
 

@@ -37,8 +37,12 @@ public:
 			BString				fServer;
 			uint16				fPort;
 			BString				fUsername;
-	// Path to the underlying backend config (e.g. an .ovpn file). Parsing is
-	// out of scope this milestone.
+	// Transport protocol the backend should use ("udp" or "tcp"); extracted
+	// from the .ovpn `proto` directive when imported. Defaults to "udp" since
+	// that is OpenVPN's default when the directive is absent.
+			BString				fProtocol;
+	// Path to the underlying backend config (e.g. an .ovpn file). Stored as
+	// a reference; the file itself stays where the user picked it from.
 			BString				fConfigPath;
 };
 

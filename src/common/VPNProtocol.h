@@ -51,7 +51,19 @@ enum {
 	kMsgStatusUpdate	= 'sUpd',
 
 	// S -> C : periodic throughput update. Carries the kField* stats values.
-	kMsgStatsUpdate		= 'sStt'
+	kMsgStatsUpdate		= 'sStt',
+
+	// C -> S : add or update a profile in the daemon's profile store. The
+	// payload is an archived VPNProfile under kFieldProfile. Keyed by name:
+	// saving a profile whose name matches an existing one overwrites it.
+	kMsgSaveProfile		= 'sSav',
+
+	// C -> S : remove a profile by name (kFieldProfileName).
+	kMsgDeleteProfile	= 'sDel',
+
+	// S -> C : the current profile list, broadcast on subscribe and whenever
+	// it changes. Each archived profile is added under kFieldProfile.
+	kMsgListProfiles	= 'sLst'
 };
 
 
@@ -80,6 +92,8 @@ static const char* const kFieldProfilePort		= "soto:profile:port";
 static const char* const kFieldProfileBackend	= "soto:profile:backendType";
 static const char* const kFieldProfileUsername	= "soto:profile:username";
 static const char* const kFieldProfileConfigPath = "soto:profile:configPath";
+// Transport protocol as a string ("udp" or "tcp"). Defaults to "udp".
+static const char* const kFieldProfileProtocol	= "soto:profile:protocol";
 
 
 #endif	// VPN_PROTOCOL_H

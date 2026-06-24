@@ -16,6 +16,7 @@ VPNProfile::VPNProfile()
 	fServer(""),
 	fPort(1194),
 	fUsername(""),
+	fProtocol("udp"),
 	fConfigPath("")
 {
 }
@@ -42,6 +43,8 @@ VPNProfile::Archive(BMessage* into) const
 	if (result == B_OK)
 		result = into->AddString(kFieldProfileUsername, fUsername);
 	if (result == B_OK)
+		result = into->AddString(kFieldProfileProtocol, fProtocol);
+	if (result == B_OK)
 		result = into->AddString(kFieldProfileConfigPath, fConfigPath);
 
 	return result;
@@ -64,6 +67,8 @@ VPNProfile::Unarchive(const BMessage& from)
 		fPort = (uint16)intValue;
 	if (from.FindString(kFieldProfileUsername, &stringValue) == B_OK)
 		fUsername = stringValue;
+	if (from.FindString(kFieldProfileProtocol, &stringValue) == B_OK)
+		fProtocol = stringValue;
 	if (from.FindString(kFieldProfileConfigPath, &stringValue) == B_OK)
 		fConfigPath = stringValue;
 

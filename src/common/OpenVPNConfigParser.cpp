@@ -1,0 +1,177 @@
+/*
+ * Copyright 2026 atomozero. All rights reserved.
+ * Distributed under the terms of the MIT License.
+ */
+#include "OpenVPNConfigParser.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <vector>
+
+
+// --- tiny string helpers ---------------------------------------------------
+
+static std::string
+trim(const std::string& input)
+{
+	size_t start = 0;
+	size_t end = input.length();
+	while (start < end && (input[start] == ' ' || input[start] == '\t'))
+		start++;
+	while (end > start && (input[end - 1] == ' ' || input[end - 1] == '\t'
+			|| input[end - 1] == '\r' || input[end - 1] == '\n')) {
+		end--;
+	}
+	return input.substr(start, end - start);
+}
+
+
+// Split `input` into whitespace-separated tokens, stopping at the first
+// '#' or ';' (OpenVPN's comment markers, when they appear outside of an
+// inline block).
+static void
+tokenize(const std::string& input, std::vector<std::string>& tokens)
+{
+	std::string current;
+	for (size_t i = 0; i < input.length(); i++) {
+		char c = input[i];
+		if (c == '#' || c == ';')
+			break;
+		if (c == ' ' || c == '\t') {
+			if (!current.empty()) {
+				tokens.push_back(current);
+				current.clear();
+			}
+		} else {
+			current += c;
+		}
+	}
+	if (!current.empty())
+		tokens.push_back(current);
+}
+
+
+// Map the various OpenVPN proto spellings onto our coarse "udp"/"tcp"
+// distinction. "tcp" / "tcp-client" / "tcp4" / "tcp6" all become "tcp"; the
+// rest fall back to "udp" (OpenVPN's default).
+static std::string
+normalize_proto(const std::string& raw)
+{
+	if (raw.length() >= 3 && raw.compare(0, 3, "tcp") == 0)
+		return "tcp";
+	return "udp";
+}
+
+
+// Derive a friendly profile name from a file path: take the basename and
+// strip the trailing ".ovpn"/".conf" if present.
+static std::string
+default_name_for(const char* path)
+{
+	if (path == NULL || *path == '\0')
+		return "";
+
+	const char* slash = strrchr(path, '/');
+	const char* base = (slash != NULL) ? slash + 1 : path;
+	std::string name(base);
+
+	const char* exts[] = { ".ovpn", ".conf", NULL };
+	for (int i = 0; exts[i] != NULL; i++) {
+		size_t extLen = strlen(exts[i]);
+		if (name.length() > extLen
+				&& name.compare(name.length() - extLen, extLen, exts[i]) == 0) {
+			name.erase(name.length() - extLen);
+			break;
+		}
+	}
+
+	return name;
+}
+
+
+// --- OpenVPNConfigParser ---------------------------------------------------
+
+void
+OpenVPNConfigParser::ParseText(const std::string& text, VPNProfile& profile)
+{
+	// Set defensible defaults. The caller may have already populated fields
+	// they want to preserve; only directives we recognise overwrite them.
+	if (profile.fProtocol.IsEmpty())
+		profile.fProtocol = "udp";
+	if (profile.fPort == 0)
+		profile.fPort = 1194;
+
+	bool sawPort = false;
+
+	// Split into lines on '\n'; trailing '\r' is handled by trim().
+	size_t start = 0;
+	while (start <= text.length()) {
+		size_t end = text.find('\n', start);
+		if (end == std::string::npos)
+			end = text.length();
+
+		std::string line = trim(text.substr(start, end - start));
+		start = end + 1;
+
+		if (line.empty() || line[0] == '#' || line[0] == ';')
+			continue;
+
+		std::vector<std::string> tokens;
+		tokenize(line, tokens);
+		if (tokens.empty())
+			continue;
+
+		const std::string& directive = tokens[0];
+
+		if (directive == "remote" && tokens.size() >= 2) {
+			profile.fServer = tokens[1].c_str();
+			if (tokens.size() >= 3 && !sawPort)
+				profile.fPort = (uint16)atoi(tokens[2].c_str());
+			if (tokens.size() >= 4 && !sawPort)
+				profile.fProtocol = normalize_proto(tokens[3]).c_str();
+		} else if (directive == "proto" && tokens.size() >= 2) {
+			profile.fProtocol = normalize_proto(tokens[1]).c_str();
+		} else if (directive == "port" && tokens.size() >= 2) {
+			profile.fPort = (uint16)atoi(tokens[1].c_str());
+			sawPort = true;
+		} else if (directive == "auth-user-pass") {
+			// The directive may take an optional filename argument; either
+			// way it tells us interactive (or scripted) credentials are
+			// required, so we mark the profile as having a username (empty
+			// string == "ask the user").
+			if (profile.fUsername.IsEmpty())
+				profile.fUsername = "";
+		}
+	}
+}
+
+
+bool
+OpenVPNConfigParser::ParseFile(const char* path, VPNProfile& profile)
+{
+	if (path == NULL || *path == '\0')
+		return false;
+
+	FILE* file = fopen(path, "rb");
+	if (file == NULL)
+		return false;
+
+	std::string text;
+	char buffer[4096];
+	for (;;) {
+		size_t got = fread(buffer, 1, sizeof(buffer), file);
+		if (got == 0)
+			break;
+		text.append(buffer, got);
+	}
+	fclose(file);
+
+	ParseText(text, profile);
+	profile.fConfigPath = path;
+	if (profile.fName.IsEmpty())
+		profile.fName = default_name_for(path).c_str();
+
+	return true;
+}

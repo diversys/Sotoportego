@@ -7,9 +7,12 @@
 #include <stdio.h>
 #include <time.h>
 
+#include <Alert.h>
 #include <Application.h>
 #include <Box.h>
 #include <Button.h>
+#include <Entry.h>
+#include <FilePanel.h>
 #include <Font.h>
 #include <GroupLayout.h>
 #include <LayoutBuilder.h>
@@ -20,6 +23,7 @@
 #include <MenuItem.h>
 #include <Message.h>
 #include <OS.h>
+#include <Path.h>
 #include <Roster.h>
 #include <ScrollView.h>
 #include <StringView.h>
@@ -27,6 +31,7 @@
 #include <View.h>
 
 #include "HeaderView.h"
+#include "OpenVPNConfigParser.h"
 #include "VPNProfile.h"
 #include "VPNProtocol.h"
 #include "VPNStats.h"
@@ -36,12 +41,12 @@
 static const uint32 kMsgPrimaryAction	= 'gAct';
 static const uint32 kMsgConnectAction	= 'gCon';
 static const uint32 kMsgDisconnectAction = 'gDis';
+static const uint32 kMsgAddProfile		= 'gAdd';
+static const uint32 kMsgRemoveProfile	= 'gRem';
+static const uint32 kMsgProfileSelected	= 'gSel';
+static const uint32 kMsgImportRefs		= 'gImp';
 
-// Demo profile values, used until profile editing/import lands.
-static const char* const kDemoProfileName	= "Demo Profile";
-static const char* const kDemoServerHost	= "vpn.example.com";
-static const uint16 kDemoServerPort			= 1194;
-static const char* const kDemoBackendName	= "OpenVPN";
+static const char* const kBackendName	= "OpenVPN";
 
 
 MainWindow::MainWindow()
@@ -53,17 +58,30 @@ MainWindow::MainWindow()
 	fHeader(NULL),
 	fServerLabel(NULL),
 	fBackendLabel(NULL),
+	fProtocolLabel(NULL),
 	fSinceValue(NULL),
 	fDownValue(NULL),
 	fUpValue(NULL),
 	fProfileList(NULL),
 	fEventLog(NULL),
+	fAddButton(NULL),
+	fRemoveButton(NULL),
 	fActionButton(NULL),
-	fStatusBar(NULL)
+	fStatusBar(NULL),
+	fImportPanel(NULL),
+	fProfiles(),
+	fSelectedName()
 {
 	_BuildLayout();
 	_UpdateForState(VPN_STATE_DISCONNECTED, NULL);
+	_RefreshDetails();
 	_EnsureSubscribed();
+}
+
+
+MainWindow::~MainWindow()
+{
+	delete fImportPanel;
 }
 
 
@@ -127,23 +145,24 @@ MainWindow::_BuildConnectionTab()
 	profilesBox->SetLabel("Profiles");
 
 	fProfileList = new BListView("profileList");
-	fProfileList->AddItem(new BStringItem(kDemoProfileName));
-	fProfileList->Select(0);
+	fProfileList->SetSelectionMessage(new BMessage(kMsgProfileSelected));
+	fProfileList->SetInvocationMessage(new BMessage(kMsgPrimaryAction));
 	BScrollView* listScroll = new BScrollView("profileScroll", fProfileList,
 		0, false, true);
 
-	BButton* addButton = new BButton("addProfile", "+", NULL);
-	BButton* removeButton = new BButton("removeProfile", "\xe2\x80\x93", NULL);
-	addButton->SetEnabled(false);
-	removeButton->SetEnabled(false);
+	fAddButton = new BButton("addProfile", "+",
+		new BMessage(kMsgAddProfile));
+	fRemoveButton = new BButton("removeProfile", "\xe2\x80\x93",
+		new BMessage(kMsgRemoveProfile));
+	fRemoveButton->SetEnabled(false);
 
 	BLayoutBuilder::Group<>(profilesBox, B_VERTICAL, B_USE_SMALL_SPACING)
 		.SetInsets(B_USE_DEFAULT_SPACING, B_USE_BIG_INSETS,
 			B_USE_DEFAULT_SPACING, B_USE_DEFAULT_SPACING)
 		.Add(listScroll)
 		.AddGroup(B_HORIZONTAL, B_USE_SMALL_SPACING)
-			.Add(addButton)
-			.Add(removeButton)
+			.Add(fAddButton)
+			.Add(fRemoveButton)
 			.AddGlue()
 		.End();
 
@@ -151,15 +170,13 @@ MainWindow::_BuildConnectionTab()
 	BBox* detailsBox = new BBox("detailsBox");
 	detailsBox->SetLabel("Server");
 
-	char serverBuf[128];
-	snprintf(serverBuf, sizeof(serverBuf), "%s:%u", kDemoServerHost,
-		(unsigned)kDemoServerPort);
-	fServerLabel = new BStringView("serverLabel", serverBuf);
+	fServerLabel = new BStringView("serverLabel", "\xe2\x80\x94");
 	BFont bigFont(be_bold_font);
 	bigFont.SetSize(bigFont.Size() * 1.2f);
 	fServerLabel->SetFont(&bigFont);
 
-	fBackendLabel = new BStringView("backendLabel", kDemoBackendName);
+	fBackendLabel = new BStringView("backendLabel", kBackendName);
+	fProtocolLabel = new BStringView("protocolLabel", "\xe2\x80\x94");
 
 	BLayoutBuilder::Group<>(detailsBox, B_VERTICAL, B_USE_SMALL_SPACING)
 		.SetInsets(B_USE_DEFAULT_SPACING, B_USE_BIG_INSETS,
@@ -168,11 +185,14 @@ MainWindow::_BuildConnectionTab()
 		.Add(fServerLabel)
 		.Add(new BStringView("backendCaption", "Backend"))
 		.Add(fBackendLabel)
+		.Add(new BStringView("protocolCaption", "Protocol"))
+		.Add(fProtocolLabel)
 		.AddGlue();
 
 	fActionButton = new BButton("actionButton", "Connect",
 		new BMessage(kMsgPrimaryAction));
 	fActionButton->MakeDefault(true);
+	fActionButton->SetEnabled(false);
 
 	BLayoutBuilder::Group<>(tab, B_VERTICAL, B_USE_DEFAULT_SPACING)
 		.SetInsets(B_USE_DEFAULT_SPACING)
@@ -261,6 +281,33 @@ MainWindow::MessageReceived(BMessage* message)
 			_SendDisconnect();
 			break;
 
+		case kMsgAddProfile:
+			_OpenImportPanel();
+			break;
+		case kMsgRemoveProfile:
+			_DeleteSelectedProfile();
+			break;
+		case kMsgProfileSelected:
+		{
+			int32 index = fProfileList->CurrentSelection();
+			fSelectedName = "";
+			if (index >= 0 && (size_t)index < fProfiles.size())
+				fSelectedName = fProfiles[index].fName;
+			_RefreshDetails();
+			break;
+		}
+		case kMsgImportRefs:
+		{
+			entry_ref ref;
+			for (int32 i = 0; message->FindRef("refs", i, &ref) == B_OK; i++)
+				_ImportFile(ref);
+			break;
+		}
+
+		case kMsgListProfiles:
+			_ApplyProfileList(message);
+			break;
+
 		case B_ABOUT_REQUESTED:
 			be_app->PostMessage(B_ABOUT_REQUESTED);
 			break;
@@ -323,17 +370,17 @@ MainWindow::_SendConnect()
 	if (!fServer.IsValid())
 		return;
 
-	// TODO: build this from the selected VPNProfile once profile management and
-	// .ovpn parsing land; for now it mirrors the CLI's demo profile.
-	VPNProfile profile;
-	profile.fBackendType = VPN_BACKEND_OPENVPN;
-	profile.fName = kDemoProfileName;
-	profile.fServer = kDemoServerHost;
-	profile.fPort = kDemoServerPort;
-	profile.fUsername = "demo";
+	const VPNProfile* selected = _SelectedProfile();
+	if (selected == NULL) {
+		BAlert* alert = new BAlert("noProfile",
+			"Pick or import a profile first.", "OK");
+		alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
+		alert->Go();
+		return;
+	}
 
 	BMessage archive;
-	profile.Archive(&archive);
+	selected->Archive(&archive);
 
 	BMessage connect(kMsgConnect);
 	connect.AddMessenger(kFieldClient, BMessenger(this));
@@ -363,6 +410,8 @@ MainWindow::_UpdateForState(VPNState state, const char* detail)
 	const char* action = (state == VPN_STATE_DISCONNECTED
 		|| state == VPN_STATE_ERROR) ? "Connect" : "Disconnect";
 
+	const VPNProfile* selected = _SelectedProfile();
+
 	if (fHeader != NULL) {
 		fHeader->SetState(state);
 
@@ -370,22 +419,30 @@ MainWindow::_UpdateForState(VPNState state, const char* detail)
 		if (detail != NULL && detail[0] != '\0') {
 			subtitle << " \xc2\xb7 ";
 			subtitle << detail;
-		} else if (state != VPN_STATE_DISCONNECTED) {
+		} else if (state != VPN_STATE_DISCONNECTED && selected != NULL) {
 			char serverBuf[128];
 			snprintf(serverBuf, sizeof(serverBuf), "%s:%u",
-				kDemoServerHost, (unsigned)kDemoServerPort);
+				selected->fServer.String(), (unsigned)selected->fPort);
 			subtitle << " \xc2\xb7 ";
 			subtitle << serverBuf;
 		}
 		fHeader->SetSubtitle(subtitle.String());
 	}
 
-	if (fActionButton != NULL)
+	if (fActionButton != NULL) {
 		fActionButton->SetLabel(action);
+		bool canConnect = selected != NULL
+			|| state == VPN_STATE_CONNECTING
+			|| state == VPN_STATE_AUTHENTICATING
+			|| state == VPN_STATE_CONNECTED
+			|| state == VPN_STATE_RECONNECTING;
+		fActionButton->SetEnabled(canConnect);
+	}
 
 	if (fStatusBar != NULL) {
 		BString status;
-		status << "1 profile \xc2\xb7 ";
+		status << (int32)fProfiles.size();
+		status << (fProfiles.size() == 1 ? " profile \xc2\xb7 " : " profiles \xc2\xb7 ");
 		status << vpn_state_name(state);
 		fStatusBar->SetText(status.String());
 	}
@@ -447,6 +504,192 @@ MainWindow::_AppendEvent(const char* text)
 	int32 count = fEventLog->CountItems();
 	if (count > 0)
 		fEventLog->Select(count - 1);
+}
+
+
+void
+MainWindow::_ApplyProfileList(const BMessage* message)
+{
+	fProfiles.clear();
+
+	BMessage archive;
+	for (int32 i = 0; message->FindMessage(kFieldProfile, i, &archive) == B_OK;
+			i++) {
+		VPNProfile profile;
+		profile.Unarchive(archive);
+		fProfiles.push_back(profile);
+	}
+
+	_RefreshProfileList();
+	_RefreshDetails();
+	_UpdateForState(fState, NULL);
+}
+
+
+void
+MainWindow::_RefreshProfileList()
+{
+	if (fProfileList == NULL)
+		return;
+
+	// Remember the currently selected name so we can restore it after the
+	// repopulate (the server's list may have arrived in a different order).
+	if (fSelectedName.Length() == 0) {
+		int32 index = fProfileList->CurrentSelection();
+		if (index >= 0 && (size_t)index < fProfiles.size())
+			fSelectedName = fProfiles[index].fName;
+	}
+
+	for (int32 i = fProfileList->CountItems() - 1; i >= 0; i--)
+		delete fProfileList->RemoveItem(i);
+
+	int32 newSelection = -1;
+	for (size_t i = 0; i < fProfiles.size(); i++) {
+		fProfileList->AddItem(new BStringItem(fProfiles[i].fName.String()));
+		if (fProfiles[i].fName == fSelectedName)
+			newSelection = (int32)i;
+	}
+
+	if (newSelection < 0 && !fProfiles.empty()) {
+		newSelection = 0;
+		fSelectedName = fProfiles[0].fName;
+	} else if (fProfiles.empty()) {
+		fSelectedName = "";
+	}
+
+	if (newSelection >= 0)
+		fProfileList->Select(newSelection);
+}
+
+
+void
+MainWindow::_RefreshDetails()
+{
+	const VPNProfile* selected = _SelectedProfile();
+	bool hasSelection = selected != NULL;
+
+	if (fRemoveButton != NULL)
+		fRemoveButton->SetEnabled(hasSelection);
+
+	if (fServerLabel != NULL) {
+		if (hasSelection) {
+			char buf[128];
+			snprintf(buf, sizeof(buf), "%s:%u",
+				selected->fServer.String(), (unsigned)selected->fPort);
+			fServerLabel->SetText(buf);
+		} else {
+			fServerLabel->SetText("\xe2\x80\x94");
+		}
+	}
+
+	if (fProtocolLabel != NULL) {
+		fProtocolLabel->SetText(hasSelection
+			? selected->fProtocol.String() : "\xe2\x80\x94");
+	}
+
+	if (fActionButton != NULL) {
+		bool isBusy = fState == VPN_STATE_CONNECTING
+			|| fState == VPN_STATE_AUTHENTICATING
+			|| fState == VPN_STATE_CONNECTED
+			|| fState == VPN_STATE_RECONNECTING;
+		fActionButton->SetEnabled(hasSelection || isBusy);
+	}
+}
+
+
+void
+MainWindow::_OpenImportPanel()
+{
+	if (fImportPanel == NULL) {
+		BMessenger target(this);
+		BMessage refsMessage(kMsgImportRefs);
+		fImportPanel = new BFilePanel(B_OPEN_PANEL, &target, NULL,
+			B_FILE_NODE, true, &refsMessage);
+		fImportPanel->Window()->SetTitle("Import .ovpn profile");
+	}
+	fImportPanel->Show();
+}
+
+
+void
+MainWindow::_ImportFile(const entry_ref& ref)
+{
+	if (!fServer.IsValid())
+		return;
+
+	BPath path(&ref);
+	if (path.InitCheck() != B_OK)
+		return;
+
+	VPNProfile profile;
+	profile.fBackendType = VPN_BACKEND_OPENVPN;
+	if (!OpenVPNConfigParser::ParseFile(path.Path(), profile)) {
+		BAlert* alert = new BAlert("importFailed",
+			"Could not read the selected .ovpn file.", "OK");
+		alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
+		alert->Go();
+		return;
+	}
+
+	if (profile.fServer.Length() == 0) {
+		BAlert* alert = new BAlert("importWarning",
+			"The .ovpn file has no 'remote' directive; the profile was "
+			"saved but cannot be used until you fix the file.",
+			"OK");
+		alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
+		alert->Go();
+	}
+
+	// Optimistically select the imported profile once the server echoes the
+	// updated list back to us.
+	fSelectedName = profile.fName;
+
+	BMessage archive;
+	profile.Archive(&archive);
+
+	BMessage save(kMsgSaveProfile);
+	save.AddMessenger(kFieldClient, BMessenger(this));
+	save.AddMessage(kFieldProfile, &archive);
+	fServer.SendMessage(&save);
+}
+
+
+void
+MainWindow::_DeleteSelectedProfile()
+{
+	if (!fServer.IsValid())
+		return;
+	const VPNProfile* selected = _SelectedProfile();
+	if (selected == NULL)
+		return;
+
+	BString question;
+	question << "Delete profile '" << selected->fName << "'?";
+	BAlert* alert = new BAlert("confirmDelete", question.String(),
+		"Cancel", "Delete");
+	alert->SetShortcut(0, B_ESCAPE);
+	if (alert->Go() != 1)
+		return;
+
+	BMessage del(kMsgDeleteProfile);
+	del.AddMessenger(kFieldClient, BMessenger(this));
+	del.AddString(kFieldProfileName, selected->fName);
+	fServer.SendMessage(&del);
+
+	fSelectedName = "";
+}
+
+
+const VPNProfile*
+MainWindow::_SelectedProfile() const
+{
+	if (fSelectedName.Length() == 0)
+		return NULL;
+	for (size_t i = 0; i < fProfiles.size(); i++) {
+		if (fProfiles[i].fName == fSelectedName)
+			return &fProfiles[i];
+	}
+	return NULL;
 }
 
 

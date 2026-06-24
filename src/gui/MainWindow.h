@@ -10,9 +10,13 @@
 #include <String.h>
 #include <Window.h>
 
+#include <vector>
+
+#include "VPNProfile.h"
 #include "VPNState.h"
 
 class BButton;
+class BFilePanel;
 class BListView;
 class BStringView;
 class HeaderView;
@@ -30,6 +34,7 @@ class HeaderView;
 class MainWindow : public BWindow {
 public:
 								MainWindow();
+	virtual						~MainWindow();
 
 	virtual	void				MessageReceived(BMessage* message);
 
@@ -45,6 +50,15 @@ private:
 			void				_ApplyStats(const BMessage* message);
 			void				_AppendEvent(const char* text);
 
+	// Profile management.
+			void				_ApplyProfileList(const BMessage* message);
+			void				_RefreshProfileList();
+			void				_RefreshDetails();
+			void				_OpenImportPanel();
+			void				_ImportFile(const entry_ref& ref);
+			void				_DeleteSelectedProfile();
+			const VPNProfile*	_SelectedProfile() const;
+
 	static	BString				_FormatBytes(int64 bytes);
 
 			BMessenger			fServer;
@@ -53,13 +67,20 @@ private:
 			HeaderView*			fHeader;
 			BStringView*		fServerLabel;
 			BStringView*		fBackendLabel;
+			BStringView*		fProtocolLabel;
 			BStringView*		fSinceValue;
 			BStringView*		fDownValue;
 			BStringView*		fUpValue;
 			BListView*			fProfileList;
 			BListView*			fEventLog;
+			BButton*			fAddButton;
+			BButton*			fRemoveButton;
 			BButton*			fActionButton;
 			BStringView*		fStatusBar;
+
+			BFilePanel*			fImportPanel;
+			std::vector<VPNProfile>	fProfiles;
+			BString					fSelectedName;
 };
 
 

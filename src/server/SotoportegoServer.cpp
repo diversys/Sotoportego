@@ -18,8 +18,10 @@
 SotoportegoServer::SotoportegoServer()
 	:
 	BApplication(kServerSignature),
-	fBackend(NULL)
+	fBackend(NULL),
+	fProfiles()
 {
+	fProfiles.Load();
 }
 
 
@@ -65,6 +67,12 @@ SotoportegoServer::MessageReceived(BMessage* message)
 			break;
 		case kMsgGetStatus:
 			_HandleGetStatus(message);
+			break;
+		case kMsgSaveProfile:
+			_HandleSaveProfile(message);
+			break;
+		case kMsgDeleteProfile:
+			_HandleDeleteProfile(message);
 			break;
 
 		// --- Events from the backend (we are its observer) -------------
@@ -130,6 +138,10 @@ SotoportegoServer::_HandleSubscribe(BMessage* message)
 
 	fClients.push_back(client);
 	printf("[server] client subscribed (%zu total)\n", fClients.size());
+
+	// Hand the new subscriber a snapshot of the profile list so it can
+	// populate its UI without waiting for the first mutation.
+	_SendProfileList(client);
 }
 
 
@@ -190,6 +202,74 @@ SotoportegoServer::_FillStatus(BMessage* message)
 	message->AddInt32(kFieldState, (int32)fBackend->State());
 	message->AddString(kFieldBackend, fBackend->BackendName());
 	fBackend->Stats().Archive(message);
+}
+
+
+void
+SotoportegoServer::_HandleSaveProfile(BMessage* message)
+{
+	BMessage archive;
+	if (message->FindMessage(kFieldProfile, &archive) != B_OK) {
+		printf("[server] save-profile rejected: missing profile payload\n");
+		return;
+	}
+
+	VPNProfile profile;
+	profile.Unarchive(archive);
+
+	status_t result = fProfiles.Save(profile);
+	if (result != B_OK) {
+		printf("[server] save-profile '%s' failed: %s\n",
+			profile.fName.String(), strerror(result));
+		return;
+	}
+
+	printf("[server] saved profile '%s' (%zu total)\n",
+		profile.fName.String(), fProfiles.Count());
+	_BroadcastProfileList();
+}
+
+
+void
+SotoportegoServer::_HandleDeleteProfile(BMessage* message)
+{
+	const char* name = NULL;
+	if (message->FindString(kFieldProfileName, &name) != B_OK || name == NULL) {
+		printf("[server] delete-profile rejected: missing profile name\n");
+		return;
+	}
+
+	status_t result = fProfiles.Delete(name);
+	if (result != B_OK) {
+		printf("[server] delete-profile '%s' failed: %s\n",
+			name, strerror(result));
+		return;
+	}
+
+	printf("[server] deleted profile '%s' (%zu total)\n",
+		name, fProfiles.Count());
+	_BroadcastProfileList();
+}
+
+
+void
+SotoportegoServer::_SendProfileList(BMessenger to) const
+{
+	if (!to.IsValid())
+		return;
+
+	BMessage list(kMsgListProfiles);
+	fProfiles.ArchiveAll(&list);
+	to.SendMessage(&list);
+}
+
+
+void
+SotoportegoServer::_BroadcastProfileList()
+{
+	BMessage list(kMsgListProfiles);
+	fProfiles.ArchiveAll(&list);
+	_Broadcast(&list);
 }
 
 
