@@ -171,9 +171,14 @@ OpenVPNManagement::ParseLine(const std::string& rawLine)
 
 		if (tag == "LOG") {
 			event.type = OPENVPN_EVENT_LOG;
-			// time,flags,message
-			std::vector<std::string> f = split(payload, ',');
-			event.message = (f.size() > 2) ? f[2] : payload;
+			// payload format is "time,flags,message". The message itself
+			// regularly contains commas (PUSH_REPLY, ifconfig command, ...),
+			// so don't split it -- just skip past the first two fields.
+			size_t firstComma = payload.find(',');
+			size_t secondComma = (firstComma != std::string::npos)
+				? payload.find(',', firstComma + 1) : std::string::npos;
+			event.message = (secondComma != std::string::npos)
+				? payload.substr(secondComma + 1) : payload;
 			return event;
 		}
 

@@ -65,6 +65,58 @@ escape_arg(const BString& value)
 }
 
 
+// Synchronously run `ifconfig <args...>` (where the variadic list ends in a
+// trailing NULL) and wait for it to finish. Returns true on a zero exit
+// status. Errors are logged to stderr but don't otherwise propagate -- the
+// caller decides whether to surface them as a connection-level error.
+static bool
+run_ifconfig(const char* const argv[])
+{
+	pid_t pid = -1;
+	int rc = posix_spawnp(&pid, "ifconfig", NULL, NULL,
+		(char* const*)argv, environ);
+	if (rc != 0) {
+		fprintf(stderr,
+			"[OpenVPN] spawn(ifconfig) failed: %s\n", strerror(rc));
+		return false;
+	}
+	int status = 0;
+	if (waitpid(pid, &status, 0) != pid)
+		return false;
+	return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+
+// Same shape as run_ifconfig but for /bin/route. Used to install and
+// uninstall the routes we need to make redirect-gateway actually work on
+// Haiku.
+static bool
+run_route(const char* const argv[])
+{
+	// Build a printable command for the daemon log so the user can correlate
+	// it with what they'd run by hand.
+	BString line("[OpenVPN] route");
+	for (int i = 1; argv[i] != NULL; i++) {
+		line << " ";
+		line << argv[i];
+	}
+	printf("%s\n", line.String());
+
+	pid_t pid = -1;
+	int rc = posix_spawnp(&pid, "route", NULL, NULL,
+		(char* const*)argv, environ);
+	if (rc != 0) {
+		fprintf(stderr,
+			"[OpenVPN] spawn(route) failed: %s\n", strerror(rc));
+		return false;
+	}
+	int status = 0;
+	if (waitpid(pid, &status, 0) != pid)
+		return false;
+	return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+
 // --- OpenVPNBackend --------------------------------------------------------
 
 OpenVPNBackend::OpenVPNBackend()
@@ -77,6 +129,11 @@ OpenVPNBackend::OpenVPNBackend()
 	fRemoteIP(),
 	fAuthUsername(),
 	fAuthPassword(),
+	fOrigGateway(),
+	fOrigGatewayIface(),
+	fTunPeer(),
+	fInstalledServerIP(),
+	fRoutesInstalled(false),
 	fManagement(),
 	fPid(-1),
 	fSocket(-1),
@@ -120,6 +177,17 @@ OpenVPNBackend::Connect(const VPNProfile& profile)
 	printf("[OpenVPN] connect requested: profile='%s' config='%s'\n",
 		fProfile.fName.String(), fProfile.fConfigPath.String());
 
+	// Haiku cannot allocate TUN/TAP devices dynamically; openvpn's open_tun
+	// just iterates /dev/tun/0 .. /dev/tun/255 and uses the first one that
+	// exists. `ifconfig tun/0 up` publishes that device through the kernel
+	// add-on. Safe to run if the interface already exists.
+	const char* const ifconfigUp[] = { "ifconfig", "tun/0", "up", NULL };
+	if (!run_ifconfig(ifconfigUp)) {
+		_SetState(VPN_STATE_ERROR,
+			"could not create tun/0 (is the tunnel kernel add-on present?)");
+		return B_ERROR;
+	}
+
 	if (!_SpawnOpenVPN(fProfile)) {
 		_SetState(VPN_STATE_ERROR,
 			"could not start openvpn (is it installed?)");
@@ -135,9 +203,12 @@ OpenVPNBackend::Connect(const VPNProfile& profile)
 	}
 
 	// Subscribe to the events we care about, then let openvpn proceed past
-	// the management-hold.
+	// the management-hold. `log on` is what makes openvpn echo its stderr
+	// lines through management, which is how _ScanLogLine() picks up the
+	// values used by the route fix-up.
 	_SendCommand("state on");
 	_SendCommand("bytecount 1");
+	_SendCommand("log on all");
 	_SendCommand("hold release");
 
 	_StartReader();
@@ -280,12 +351,19 @@ OpenVPNBackend::_SpawnOpenVPN(const VPNProfile& profile)
 
 	// Build argv. posix_spawnp wants char*; the strings live for the
 	// duration of the call only, so casting away const here is fine.
+	// --route-noexec stops openvpn from installing routes itself. The Haiku
+	// port hardcodes the physical interface for every route it adds, so
+	// the redirect-gateway routes end up on wifi instead of tun/0 and
+	// traffic disappears. We re-install them ourselves in _InstallRoutes()
+	// once we have CONNECTED and have parsed the values we need out of
+	// openvpn's log stream.
 	char* argv[] = {
 		(char*)"openvpn",
 		(char*)"--config", (char*)profile.fConfigPath.String(),
 		(char*)"--management", (char*)"127.0.0.1", portStr,
 		(char*)"--management-hold",
 		(char*)"--management-query-passwords",
+		(char*)"--route-noexec",
 		(char*)"--verb", (char*)"3",
 		NULL
 	};
@@ -445,9 +523,24 @@ OpenVPNBackend::_Cleanup(bool wait)
 		fPid = -1;
 	}
 
+	// Drop the routes we installed in _InstallRoutes BEFORE tearing the tun
+	// device down, otherwise the route command can fail when the interface
+	// is already gone.
+	_RemoveRoutes();
+
+	// Drop tun/0 so we don't leave it carrying a stale IP and a default
+	// route after openvpn is gone. openvpn does its own cleanup on a clean
+	// exit, but if it crashes mid-flight the half-configured interface
+	// would steer all subsequent traffic into a black hole.
+	const char* const ifconfigDown[] = { "ifconfig", "tun/0", "down", NULL };
+	run_ifconfig(ifconfigDown);
+
 	fLocalIP = "";
 	fAuthUsername = "";
 	fAuthPassword = "";
+	fOrigGateway = "";
+	fOrigGatewayIface = "";
+	fTunPeer = "";
 }
 
 
@@ -502,6 +595,11 @@ OpenVPNBackend::_HandleManagementEvent(const OpenVPNEvent& event)
 					fLocalIP = event.localIP.c_str();
 				if (!event.remoteIP.empty())
 					fRemoteIP = event.remoteIP.c_str();
+				// All the values needed for the route fix-up have been
+				// scanned out of the preceding log lines (ROUTE_GATEWAY
+				// and PUSH_REPLY). event.remoteIP is the VPN server's
+				// public IP, the third piece we need.
+				_InstallRoutes(BString(event.remoteIP.c_str()));
 			}
 			_SetState(event.mappedState,
 				event.stateDetail.empty() ? NULL : event.stateDetail.c_str());
@@ -536,8 +634,10 @@ OpenVPNBackend::_HandleManagementEvent(const OpenVPNEvent& event)
 
 		case OPENVPN_EVENT_LOG:
 		case OPENVPN_EVENT_INFO:
-			if (!event.message.empty())
+			if (!event.message.empty()) {
 				printf("[OpenVPN] %s\n", event.message.c_str());
+				_ScanLogLine(event.message);
+			}
 			break;
 
 		default:
@@ -553,4 +653,146 @@ OpenVPNBackend::_SetState(VPNState state, const char* detail)
 	printf("[OpenVPN] state -> %s%s%s\n", vpn_state_name(state),
 		detail != NULL ? ": " : "", detail != NULL ? detail : "");
 	NotifyStateChanged(state, detail);
+}
+
+
+// --- log scanning and route fix-up ----------------------------------------
+
+// Lift the first whitespace-delimited token starting at `pos` out of `s`.
+// Stops at any of " \t,'\"". Returns the token (possibly empty).
+static std::string
+take_token(const std::string& s, size_t pos)
+{
+	while (pos < s.length() && (s[pos] == ' ' || s[pos] == '\t'))
+		pos++;
+	size_t end = pos;
+	while (end < s.length()) {
+		char c = s[end];
+		if (c == ' ' || c == '\t' || c == ',' || c == '\'' || c == '"'
+				|| c == '\n' || c == '\r') {
+			break;
+		}
+		end++;
+	}
+	return s.substr(pos, end - pos);
+}
+
+
+void
+OpenVPNBackend::_ScanLogLine(const std::string& line)
+{
+	// openvpn prints the underlying default route once it has worked out
+	// where to send tunnel packets:
+	//   ROUTE_GATEWAY 192.168.188.1 IFACE=/dev/net/iprowifi4965/0
+	if (fOrigGateway.Length() == 0) {
+		size_t pos = line.find("ROUTE_GATEWAY ");
+		if (pos != std::string::npos) {
+			std::string gw = take_token(line, pos + 14);
+			size_t ifacePos = line.find("IFACE=", pos);
+			std::string iface;
+			if (ifacePos != std::string::npos)
+				iface = take_token(line, ifacePos + 6);
+			if (!gw.empty() && !iface.empty()) {
+				fOrigGateway = gw.c_str();
+				fOrigGatewayIface = iface.c_str();
+				printf("[OpenVPN] captured default route: %s via %s\n",
+					fOrigGateway.String(), fOrigGatewayIface.String());
+			}
+		}
+	}
+
+	// The PUSH_REPLY carries the in-tunnel peer/gateway under a comma-
+	// separated key/value pair like "route-gateway 10.245.243.246". The
+	// PUSH_REPLY message also contains commas, which is why we needed the
+	// LOG-parser fix in OpenVPNManagement; the substring search here is
+	// agnostic to surrounding noise.
+	if (fTunPeer.Length() == 0) {
+		size_t pos = line.find("route-gateway ");
+		if (pos != std::string::npos) {
+			std::string peer = take_token(line, pos + 14);
+			if (!peer.empty()) {
+				fTunPeer = peer.c_str();
+				printf("[OpenVPN] captured tunnel peer: %s\n",
+					fTunPeer.String());
+			}
+		}
+	}
+}
+
+
+void
+OpenVPNBackend::_InstallRoutes(const BString& vpnServerIP)
+{
+	if (fRoutesInstalled)
+		return;
+
+	// All three values are needed -- without them we can't even guess at the
+	// right route commands, so refuse rather than do something destructive.
+	if (fOrigGateway.Length() == 0 || fOrigGatewayIface.Length() == 0
+			|| fTunPeer.Length() == 0 || vpnServerIP.Length() == 0) {
+		fprintf(stderr,
+			"[OpenVPN] missing routing info, skipping route fix-up "
+			"(server=%s gw=%s iface=%s peer=%s)\n",
+			vpnServerIP.String(),
+			fOrigGateway.String(),
+			fOrigGatewayIface.String(),
+			fTunPeer.String());
+		return;
+	}
+
+	// 1) Pin the VPN server to the underlying default route so openvpn's
+	// UDP/TCP packets don't try to flow back through the tunnel they're
+	// carrying.
+	const char* const serverPin[] = {
+		"route", "add", fOrigGatewayIface.String(), "inet",
+		vpnServerIP.String(), "gw", fOrigGateway.String(),
+		"netmask", "255.255.255.255", NULL
+	};
+	run_route(serverPin);
+
+	// 2,3) Replace the system default route with two /1 routes pointing at
+	// the tunnel peer over tun/0. Two halves win over the existing 0.0.0.0/0
+	// by longest-prefix match, so we don't have to touch the original
+	// default.
+	const char* const lower[] = {
+		"route", "add", "tun/0", "inet", "0.0.0.0",
+		"gw", fTunPeer.String(), "netmask", "128.0.0.0", NULL
+	};
+	const char* const upper[] = {
+		"route", "add", "tun/0", "inet", "128.0.0.0",
+		"gw", fTunPeer.String(), "netmask", "128.0.0.0", NULL
+	};
+	run_route(lower);
+	run_route(upper);
+
+	fInstalledServerIP = vpnServerIP;
+	fRoutesInstalled = true;
+}
+
+
+void
+OpenVPNBackend::_RemoveRoutes()
+{
+	if (!fRoutesInstalled)
+		return;
+
+	const char* const upper[] = {
+		"route", "delete", "tun/0", "inet", "128.0.0.0",
+		"gw", fTunPeer.String(), "netmask", "128.0.0.0", NULL
+	};
+	const char* const lower[] = {
+		"route", "delete", "tun/0", "inet", "0.0.0.0",
+		"gw", fTunPeer.String(), "netmask", "128.0.0.0", NULL
+	};
+	const char* const serverPin[] = {
+		"route", "delete", fOrigGatewayIface.String(), "inet",
+		fInstalledServerIP.String(), "gw", fOrigGateway.String(),
+		"netmask", "255.255.255.255", NULL
+	};
+	run_route(upper);
+	run_route(lower);
+	run_route(serverPin);
+
+	fRoutesInstalled = false;
+	fInstalledServerIP = "";
 }

@@ -60,6 +60,18 @@ private:
 			void				_HandleManagementEvent(
 									const OpenVPNEvent& event);
 
+	// Scan a single openvpn log line for the values our route fix needs:
+	// ROUTE_GATEWAY (the original gateway + iface) and PUSH_REPLY's
+	// route-gateway (the in-tunnel peer).
+			void				_ScanLogLine(const std::string& line);
+
+	// Routing fix-up. The Haiku openvpn port hardcodes rgi->iface for
+	// every route it adds, so the pushed default route ends up on the
+	// wifi interface and packets disappear. We pass --route-noexec and
+	// install the right routes ourselves once the tunnel is up.
+			void				_InstallRoutes(const BString& vpnServerIP);
+			void				_RemoveRoutes();
+
 			void				_SetState(VPNState state,
 									const char* detail = NULL);
 
@@ -70,6 +82,15 @@ private:
 			BString				fRemoteIP;
 			BString				fAuthUsername;
 			BString				fAuthPassword;
+	// Values harvested from openvpn's log stream and used by _InstallRoutes.
+	// `fOrigGatewayIface` is the path the kernel's route command wants
+	// (e.g. "/dev/net/iprowifi4965/0"); `fTunPeer` is the in-tunnel peer
+	// IP that the pushed default route should target.
+			BString				fOrigGateway;
+			BString				fOrigGatewayIface;
+			BString				fTunPeer;
+			BString				fInstalledServerIP;
+			bool				fRoutesInstalled;
 			OpenVPNManagement	fManagement;
 
 	// Live process / connection. Owned by Connect()/_Cleanup().
