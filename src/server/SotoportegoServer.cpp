@@ -8,18 +8,32 @@
 #include <string.h>
 
 #include <Message.h>
+#include <Notification.h>
 
+#include "GeoLookup.h"
 #include "OpenVPNBackend.h"
 #include "VPNProfile.h"
 #include "VPNProtocol.h"
 #include "VPNStats.h"
 
 
+// Internal 'what' for the geo-lookup result. Stays in this translation unit
+// because no client should ever see it.
+static const uint32 kMsgCountryResult = 'sCty';
+
+// Identifier the notification server uses to update the same toast rather
+// than stacking new ones for every transition.
+static const char* const kNotificationGroup = "Sotoportego";
+static const char* const kConnNotificationID = "soto-conn";
+
+
 SotoportegoServer::SotoportegoServer()
 	:
 	BApplication(kServerSignature),
 	fBackend(NULL),
-	fProfiles()
+	fProfiles(),
+	fLastState(VPN_STATE_DISCONNECTED),
+	fLastServerSummary()
 {
 	fProfiles.Load();
 }
@@ -78,8 +92,16 @@ SotoportegoServer::MessageReceived(BMessage* message)
 		// --- Events from the backend (we are its observer) -------------
 		// The backend addresses these to us; we fan them out to clients.
 		case kMsgStatusUpdate:
+			_HandleStatusForNotification(message);
+			_Broadcast(message);
+			break;
 		case kMsgStatsUpdate:
 			_Broadcast(message);
+			break;
+
+		// --- Internal: country lookup result ---------------------------
+		case kMsgCountryResult:
+			_HandleCountryResult(message);
 			break;
 
 		default:
@@ -289,6 +311,122 @@ SotoportegoServer::_BroadcastProfileList()
 	BMessage list(kMsgListProfiles);
 	fProfiles.ArchiveAll(&list);
 	_Broadcast(&list);
+}
+
+
+void
+SotoportegoServer::_PostNotification(const char* title, const char* content,
+	int32 type)
+{
+	BNotification notification((notification_type)type);
+	notification.SetGroup(kNotificationGroup);
+	notification.SetMessageID(kConnNotificationID);
+	notification.SetTitle(title);
+	notification.SetContent(content);
+	notification.Send();
+}
+
+
+void
+SotoportegoServer::_HandleStatusForNotification(BMessage* message)
+{
+	int32 stateValue = VPN_STATE_DISCONNECTED;
+	message->FindInt32(kFieldState, &stateValue);
+	VPNState newState = (VPNState)stateValue;
+	VPNState previous = fLastState;
+	fLastState = newState;
+	if (newState == previous)
+		return;
+
+	switch (newState) {
+		case VPN_STATE_CONNECTED:
+		{
+			// Build a one-line server summary up-front -- the geo-lookup
+			// result needs the same line plus the country tag.
+			const char* remote = NULL;
+			if (message->FindString(kFieldRemoteIP, &remote) != B_OK)
+				remote = NULL;
+			fLastServerSummary = remote != NULL && *remote != '\0'
+				? remote : "VPN";
+
+			BString content("Connected to ");
+			content << fLastServerSummary;
+			_PostNotification("Sotoportego", content.String(),
+				B_INFORMATION_NOTIFICATION);
+
+			// Ask ip-api what country we appear to come from now that
+			// traffic flows through the tunnel. The answer arrives later
+			// as kMsgCountryResult.
+			GeoLookup::BackgroundLookup(BMessenger(this), kMsgCountryResult);
+			break;
+		}
+
+		case VPN_STATE_DISCONNECTED:
+		{
+			// Only surface a notification when we just came back from an
+			// active session; ignore the noop "still disconnected" cases.
+			if (previous != VPN_STATE_CONNECTED
+					&& previous != VPN_STATE_RECONNECTING
+					&& previous != VPN_STATE_AUTHENTICATING
+					&& previous != VPN_STATE_CONNECTING) {
+				break;
+			}
+			_PostNotification("Sotoportego", "VPN disconnected.",
+				B_INFORMATION_NOTIFICATION);
+			fLastServerSummary = "";
+			break;
+		}
+
+		case VPN_STATE_ERROR:
+		{
+			const char* detail = NULL;
+			if (message->FindString(kFieldDetail, &detail) != B_OK)
+				detail = NULL;
+			BString content("VPN error");
+			if (detail != NULL && *detail != '\0') {
+				content << ": ";
+				content << detail;
+			}
+			content << ".";
+			_PostNotification("Sotoportego", content.String(),
+				B_ERROR_NOTIFICATION);
+			fLastServerSummary = "";
+			break;
+		}
+
+		default:
+			// Intermediate states (Connecting, Authenticating,
+			// Reconnecting) don't pop notifications -- the GUI's header
+			// already shows them and we don't want to flood the user.
+			break;
+	}
+}
+
+
+void
+SotoportegoServer::_HandleCountryResult(BMessage* message)
+{
+	// The lookup may have failed silently; in that case we keep the
+	// original "Connected to ..." text rather than overwrite it with
+	// something less informative.
+	if (fLastState != VPN_STATE_CONNECTED)
+		return;
+
+	const char* country = NULL;
+	if (message->FindString(GeoLookup::kFieldCountry, &country) != B_OK
+			|| country == NULL || *country == '\0') {
+		return;
+	}
+
+	BString content("Connected to ");
+	if (fLastServerSummary.Length() > 0)
+		content << fLastServerSummary;
+	else
+		content << "VPN";
+	content << "\nApparent country: ";
+	content << country;
+	_PostNotification("Sotoportego", content.String(),
+		B_INFORMATION_NOTIFICATION);
 }
 
 

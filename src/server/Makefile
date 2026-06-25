@@ -21,6 +21,7 @@ SRCS = \
 	main.cpp \
 	SotoportegoServer.cpp \
 	ProfileStore.cpp \
+	GeoLookup.cpp \
 	../backend/VPNBackend.cpp \
 	../backend/OpenVPNBackend.cpp \
 	../backend/OpenVPNManagement.cpp \

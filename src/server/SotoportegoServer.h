@@ -45,6 +45,17 @@ private:
 			void				_HandleSaveProfile(BMessage* message);
 			void				_HandleDeleteProfile(BMessage* message);
 
+	// Watch incoming status updates for the transitions that warrant a
+	// desktop notification (Connected, Disconnected, Error) and fan them
+	// out via BNotification. The Connected notification kicks off a
+	// background geo-lookup that updates it with the apparent country
+	// once the answer comes back.
+			void				_HandleStatusForNotification(
+									BMessage* message);
+			void				_HandleCountryResult(BMessage* message);
+			void				_PostNotification(const char* title,
+									const char* content, int32 type = 0);
+
 	// Re-broadcast a backend event (state or stats) to every subscribed
 	// client, pruning any that have gone away.
 			void				_Broadcast(BMessage* message);
@@ -62,6 +73,14 @@ private:
 			VPNBackend*				fBackend;
 			ProfileStore			fProfiles;
 			std::vector<BMessenger>	fClients;
+
+	// Last broadcast state we observed, so we know which transitions just
+	// happened and only fire notifications once per state change.
+			VPNState				fLastState;
+	// Last successful connection summary, kept so the
+	// geo-lookup result can rebuild the same notification text plus the
+	// country tag.
+			BString					fLastServerSummary;
 };
 
 
