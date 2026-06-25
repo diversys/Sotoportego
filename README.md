@@ -49,6 +49,11 @@ If Sotoportego saves you time, consider supporting development: [![Buy Me A Coff
 * **Credentials prompt** — modal `CredentialsWindow` before every
   Connect; the user-supplied user/password ride a transient field on the
   Connect message and never get persisted.
+* **Desktop notifications** — `BNotification` toasts on Connect /
+  Disconnect / Error so the GUI doesn't have to be in the foreground.
+  The Connect notification then updates itself with the *apparent
+  country* once a background geo-lookup (HTTP through the tunnel)
+  returns.
 * **CLI test client** — `sotoportego_cli` proves the IPC + backend seams
   with a one-shot connect / linger / disconnect round-trip.
 * **Built-in event log** — every state transition is appended to the
@@ -108,8 +113,9 @@ The GUI launches the daemon automatically via `be_roster`. From there:
    dot in the header walk through *Connecting → Authenticating →
    Connected*. The **Statistics** tab keeps a live event log and
    download/upload counters.
-4. **Disconnect** asks openvpn to terminate via the management socket
-   and tears `tun/0` down so the routing table is left the way it was
+4. **Disconnect** asks openvpn to terminate via the management socket,
+   removes the routes we installed and deletes `tun/0` from the
+   interface list, so the routing table is left exactly the way it was
    found.
 
 ### Daemon (manual)
@@ -145,7 +151,9 @@ src/common/    Shared types and wire protocol (VPNState, VPNStats,
 src/backend/   Backend seam: VPNBackend interface, real OpenVPNBackend
                (process + management socket + reader thread), and
                OpenVPNManagement (the management-interface parser)
-src/server/    The daemon (a BApplication / BLooper) and ProfileStore
+src/server/    The daemon (a BApplication / BLooper), ProfileStore
+               (persistent profiles), and GeoLookup (background HTTP
+               worker behind the connect notifications)
 src/cli/       sotoportego_cli — the test client
 src/gui/       Sotoportego — the native GUI client (HeaderView,
                MainWindow, CredentialsWindow, About, brand HVIF)
@@ -176,7 +184,15 @@ src/gui/       Sotoportego — the native GUI client (HeaderView,
   the tunnel. We pass `--route-noexec`, scan `ROUTE_GATEWAY` and
   `PUSH_REPLY` out of the log stream, and install three routes
   ourselves (the VPN server pinned to the original gateway, plus two
-  `/1` halves of the default via the tunnel peer on `tun/0`).
+  `/1` halves of the default via the tunnel peer on `tun/0`). Both the
+  routes and the `tun/0` interface itself are torn back down on
+  Disconnect.
+* **Notifications go through the tunnel.** The geo-lookup behind the
+  Connect notification fires *after* CONNECTED, so the HTTP request to
+  ip-api.com travels through `tun/0` and reports the country we now
+  appear to come from, not the carrier's. It's a 4-second worker
+  thread with a hard timeout; if the egress blocks port 80 the
+  original "Connected to ..." toast stays put.
 * **`docs/` and `tests/` are intentionally not part of the repo.** They
   live on disk for the author's workflow but the tracked tree is the
   shipping artefact.
