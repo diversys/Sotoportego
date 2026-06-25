@@ -25,3 +25,6 @@ obj-*/
 # author's workflow but are intentionally not tracked in the repo.
 /docs/
 /tests/
+
+# Release archives produced by the manual packaging step.
+/dist/
