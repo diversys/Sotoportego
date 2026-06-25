@@ -52,6 +52,7 @@ static const uint32 kMsgImportRefs			= 'gImp';
 static const uint32 kMsgCredentialsOK		= 'gCrO';
 static const uint32 kMsgCredentialsCancel	= 'gCrC';
 static const uint32 kMsgVaporetto			= 'gVap';
+static const uint32 kMsgForgetPassword		= 'gFor';
 
 static const char* const kBackendName	= "OpenVPN";
 
@@ -87,7 +88,9 @@ MainWindow::MainWindow()
 	fImportPanel(NULL),
 	fProfiles(),
 	fSelectedName(),
-	fCountry()
+	fCountry(),
+	fLastConnectProfile(),
+	fLastUsedStoredCredentials(false)
 {
 	_BuildLayout();
 	_UpdateForState(VPN_STATE_DISCONNECTED, NULL);
@@ -119,6 +122,9 @@ MainWindow::_BuildLayout()
 		new BMessage(kMsgConnectAction)));
 	connectionMenu->AddItem(new BMenuItem("Disconnect",
 		new BMessage(kMsgDisconnectAction)));
+	connectionMenu->AddSeparatorItem();
+	connectionMenu->AddItem(new BMenuItem("Forget saved password",
+		new BMessage(kMsgForgetPassword)));
 	menuBar->AddItem(connectionMenu);
 
 	fHeader = new HeaderView("header");
@@ -344,6 +350,9 @@ MainWindow::MessageReceived(BMessage* message)
 		case kMsgRemoveProfile:
 			_DeleteSelectedProfile();
 			break;
+		case kMsgForgetPassword:
+			_ForgetSelectedPassword();
+			break;
 		case kMsgProfileSelected:
 		{
 			int32 index = fProfileList->CurrentSelection();
@@ -464,9 +473,13 @@ MainWindow::_BeginConnectFlow()
 	BString storedPass;
 	if (load_stored_credentials(selected->fName.String(), storedUser,
 			storedPass)) {
+		fLastUsedStoredCredentials = true;
 		_SendConnectWith(storedUser.String(), storedPass.String());
 		return;
 	}
+	// The dialog path will set fLastUsedStoredCredentials = false in
+	// _SendConnectWith via the kMsgCredentialsOK branch.
+	fLastUsedStoredCredentials = false;
 
 	// Always prompt otherwise -- we can't reliably know up-front whether
 	// the .ovpn file requires interactive auth, and an empty prompt is
@@ -486,6 +499,10 @@ MainWindow::_SendConnectWith(const char* username, const char* password)
 	const VPNProfile* selected = _SelectedProfile();
 	if (selected == NULL)
 		return;
+
+	// Snapshot which profile we're trying to authenticate against, so
+	// the auth-failure path knows which keystore entry to clear.
+	fLastConnectProfile = selected->fName;
 
 	BMessage archive;
 	selected->Archive(&archive);
@@ -575,10 +592,28 @@ MainWindow::_UpdateForState(VPNState state, const char* detail)
 		// easy to glance past when openvpn fails after a couple of state
 		// flips.
 		if (state == VPN_STATE_ERROR && previous != VPN_STATE_ERROR) {
+			// If we just used a stored password and the failure was an
+			// auth rejection, drop the stored secret so the next Connect
+			// prompts the user instead of looping on the same bad value.
+			bool clearedStored = false;
+			bool authFailed = (detail != NULL
+				&& BString(detail).IFindFirst("authentication failed")
+					>= 0);
+			if (authFailed && fLastUsedStoredCredentials
+					&& fLastConnectProfile.Length() > 0) {
+				forget_credentials(fLastConnectProfile.String());
+				clearedStored = true;
+			}
+			fLastUsedStoredCredentials = false;
+
 			BString body("The VPN connection failed.");
 			if (detail != NULL && detail[0] != '\0') {
 				body << "\n\n";
 				body << detail;
+			}
+			if (clearedStored) {
+				body << "\n\nThe saved password has been cleared; you'll be "
+					"asked for it on the next Connect.";
 			}
 			BAlert* alert = new BAlert("connectionError", body.String(),
 				"OK", NULL, NULL, B_WIDTH_AS_USUAL, B_STOP_ALERT);
@@ -812,6 +847,40 @@ MainWindow::_DeleteSelectedProfile()
 	forget_credentials(selected->fName.String());
 
 	fSelectedName = "";
+}
+
+
+void
+MainWindow::_ForgetSelectedPassword()
+{
+	const VPNProfile* selected = _SelectedProfile();
+	if (selected == NULL) {
+		BAlert* alert = new BAlert("noProfile",
+			"Pick a profile first.", "OK");
+		alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
+		alert->Go();
+		return;
+	}
+
+	// Confirm before clearing. It's a small, reversible action (the
+	// user can retick Remember on the next Connect), but typing the
+	// password again has a cost and we don't want a stray menu pick
+	// to surprise them.
+	BString question;
+	question << "Forget the saved password for '" << selected->fName
+		<< "'?\n\nYou'll be asked for it the next time you connect.";
+	BAlert* confirm = new BAlert("confirmForget", question.String(),
+		"Cancel", "Forget");
+	confirm->SetShortcut(0, B_ESCAPE);
+	if (confirm->Go() != 1)
+		return;
+
+	forget_credentials(selected->fName.String());
+
+	BAlert* done = new BAlert("forgotten",
+		"Done. The saved password (if any) has been cleared.", "OK");
+	done->SetFlags(done->Flags() | B_CLOSE_ON_ESCAPE);
+	done->Go();
 }
 
 

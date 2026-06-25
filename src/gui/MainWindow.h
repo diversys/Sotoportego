@@ -65,6 +65,12 @@ private:
 			void				_SendConnectWith(const char* username,
 									const char* password);
 
+	// "Forget saved password" affordance and its automatic counterpart:
+	// when an in-flight Connect with stored credentials lands in ERROR
+	// with "authentication failed", drop them so the next Connect
+	// prompts again instead of looping on the same bad secret.
+			void				_ForgetSelectedPassword();
+
 	static	BString				_FormatBytes(int64 bytes);
 
 			BMessenger			fServer;
@@ -92,6 +98,13 @@ private:
 	// geo-lookup completes. Empty before that lookup lands and cleared
 	// on every Disconnect.
 			BString					fCountry;
+
+	// Name of the profile we last sent kMsgConnect with, plus whether
+	// we used a keystore-stored password for it. Together they tell
+	// the auth-failure path whether (and which) stored credentials to
+	// clear so we don't loop on a stale secret.
+			BString					fLastConnectProfile;
+			bool					fLastUsedStoredCredentials;
 };
 
 
