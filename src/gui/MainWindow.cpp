@@ -76,7 +76,8 @@ MainWindow::MainWindow()
 	fStatusBar(NULL),
 	fImportPanel(NULL),
 	fProfiles(),
-	fSelectedName()
+	fSelectedName(),
+	fCountry()
 {
 	_BuildLayout();
 	_UpdateForState(VPN_STATE_DISCONNECTED, NULL);
@@ -365,6 +366,17 @@ MainWindow::MessageReceived(BMessage* message)
 					&& (VPNState)state == VPN_STATE_DISCONNECTED) {
 				fTunnelIPValue->SetText("\xe2\x80\x94");
 			}
+			// Country either arrives in this update (the daemon broadcasts
+			// it after the geo-lookup finishes) or gets cleared when the
+			// session ends.
+			const char* country = NULL;
+			if (message->FindString(kFieldCountry, &country) == B_OK
+					&& country != NULL && *country != '\0') {
+				fCountry = country;
+			} else if ((VPNState)state == VPN_STATE_DISCONNECTED
+					|| (VPNState)state == VPN_STATE_ERROR) {
+				fCountry = "";
+			}
 			_UpdateForState((VPNState)state, detail);
 			_ApplyStats(message);
 			break;
@@ -513,6 +525,10 @@ MainWindow::_UpdateForState(VPNState state, const char* detail)
 		status << (int32)fProfiles.size();
 		status << (fProfiles.size() == 1 ? " profile \xc2\xb7 " : " profiles \xc2\xb7 ");
 		status << vpn_state_name(state);
+		if (state == VPN_STATE_CONNECTED && fCountry.Length() > 0) {
+			status << " \xc2\xb7 ";
+			status << fCountry;
+		}
 		fStatusBar->SetText(status.String());
 	}
 

@@ -88,6 +88,10 @@ private:
 			BFilePanel*			fImportPanel;
 			std::vector<VPNProfile>	fProfiles;
 			BString					fSelectedName;
+	// Apparent egress country, broadcast by the daemon after the
+	// geo-lookup completes. Empty before that lookup lands and cleared
+	// on every Disconnect.
+			BString					fCountry;
 };
 
 

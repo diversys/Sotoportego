@@ -418,15 +418,27 @@ SotoportegoServer::_HandleCountryResult(BMessage* message)
 		return;
 	}
 
+	// Server on the first line, country alone on the second -- the
+	// context makes the label redundant and the country is the part
+	// the eye lands on.
 	BString content("Connected to ");
 	if (fLastServerSummary.Length() > 0)
 		content << fLastServerSummary;
 	else
 		content << "VPN";
-	content << "\nApparent country: ";
+	content << "\n";
 	content << country;
 	_PostNotification("Sotoportego", content.String(),
 		B_INFORMATION_NOTIFICATION);
+
+	// Also push a status update so subscribed clients (the GUI) can
+	// surface the country in their own UI. Reuses _FillStatus so the
+	// payload looks like any other status broadcast plus the new
+	// kFieldCountry field.
+	BMessage update(kMsgStatusUpdate);
+	_FillStatus(&update);
+	update.AddString(kFieldCountry, country);
+	_Broadcast(&update);
 }
 
 

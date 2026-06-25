@@ -92,6 +92,11 @@ static const char* const kFieldConnectedSince	= "soto:connectedSince";
 static const char* const kFieldLocalIP			= "soto:localIP";
 static const char* const kFieldRemoteIP			= "soto:remoteIP";
 
+// Apparent egress country, as resolved by the daemon's geo-lookup that
+// runs *through* the tunnel after CONNECTED. Optional; absent before the
+// lookup completes and on any state other than CONNECTED.
+static const char* const kFieldCountry			= "soto:country";
+
 // Transient connect-time credentials. Plaintext; never persisted by the
 // daemon. The GUI strips them from the message after delivery.
 static const char* const kFieldUsername			= "soto:auth:username";
