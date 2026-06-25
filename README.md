@@ -51,7 +51,11 @@ If Sotoportego saves you time, consider supporting development: [![Buy Me A Coff
   checkbox; tick it once and the next Connect for that profile skips
   the prompt entirely, pulling the stored secret from the Haiku
   keystore (`BKeyStore` / `BPasswordKey`). Unticked credentials are
-  transient and never reach disk.
+  transient and never reach disk. A *Connection → Forget saved
+  password* menu item drops a stored entry on demand, and the same
+  cleanup runs automatically if `AUTH_FAILED` lands while we were
+  using a stored secret, so a server-side password change can't loop
+  forever.
 * **Desktop notifications** — `BNotification` toasts on Connect /
   Disconnect / Error so the GUI doesn't have to be in the foreground.
   The Connect notification then updates itself with the *apparent
@@ -208,8 +212,6 @@ src/gui/       Sotoportego — the native GUI client (HeaderView,
 
 * WireGuard backend behind the same `VPNBackend` interface.
 * Deskbar replicant with the same brand tile + status dot.
-* "Forget saved password" UI + automatic clear on AUTH_FAILED, so a
-  stored credential gone stale doesn't loop.
 * IPv6 routing fix-up.
 * Reconnect / backoff handling with a visible countdown.
 * IPSec.
