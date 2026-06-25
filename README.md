@@ -46,14 +46,18 @@ If Sotoportego saves you time, consider supporting development: [![Buy Me A Coff
 * **Mose-inspired GUI** — slate header banner with the HVIF brand tile
   and a state-coloured status dot, tabbed `Connection` / `Statistics`
   layout, About dialog with the same brand identity.
-* **Credentials prompt** — modal `CredentialsWindow` before every
-  Connect; the user-supplied user/password ride a transient field on the
-  Connect message and never get persisted.
+* **Credentials prompt with optional remember** — modal
+  `CredentialsWindow` before every Connect, with a "Remember password"
+  checkbox; tick it once and the next Connect for that profile skips
+  the prompt entirely, pulling the stored secret from the Haiku
+  keystore (`BKeyStore` / `BPasswordKey`). Unticked credentials are
+  transient and never reach disk.
 * **Desktop notifications** — `BNotification` toasts on Connect /
   Disconnect / Error so the GUI doesn't have to be in the foreground.
   The Connect notification then updates itself with the *apparent
   country* once a background geo-lookup (HTTP through the tunnel)
-  returns.
+  returns; the same value is broadcast to subscribed clients so the
+  GUI's status bar shows it alongside the connection state.
 * **CLI test client** — `sotoportego_cli` proves the IPC + backend seams
   with a one-shot connect / linger / disconnect round-trip.
 * **Built-in event log** — every state transition is appended to the
@@ -109,10 +113,12 @@ The GUI launches the daemon automatically via `be_roster`. From there:
 2. Select a profile in the list. The **Server** box on the right shows
    the host, backend, protocol and (after Connect) the tunnel-assigned
    **Tunnel IP**.
-3. Click **Connect**, fill in the credentials prompt, watch the status
-   dot in the header walk through *Connecting → Authenticating →
-   Connected*. The **Statistics** tab keeps a live event log and
-   download/upload counters.
+3. Click **Connect**, fill in the credentials prompt (tick **Remember
+   password** if you don't want to re-type them next time), watch the
+   status dot in the header walk through *Connecting → Authenticating
+   → Connected*. The bottom status bar gains the apparent country a
+   second or two later; the **Statistics** tab keeps a live event log
+   and download/upload counters.
 4. **Disconnect** asks openvpn to terminate via the management socket,
    removes the routes we installed and deletes `tun/0` from the
    interface list, so the routing table is left exactly the way it was
@@ -201,9 +207,9 @@ src/gui/       Sotoportego — the native GUI client (HeaderView,
 ## Roadmap
 
 * WireGuard backend behind the same `VPNBackend` interface.
-* Credential storage via the Haiku keystore (`BKeyStore`), so the
-  modal prompt becomes optional.
 * Deskbar replicant with the same brand tile + status dot.
+* "Forget saved password" UI + automatic clear on AUTH_FAILED, so a
+  stored credential gone stale doesn't loop.
 * IPv6 routing fix-up.
 * Reconnect / backoff handling with a visible countdown.
 * IPSec.
