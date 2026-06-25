@@ -5,6 +5,7 @@
 #include "CredentialsWindow.h"
 
 #include <Button.h>
+#include <CheckBox.h>
 #include <LayoutBuilder.h>
 #include <Message.h>
 #include <StringView.h>
@@ -13,6 +14,8 @@
 
 #include "VPNProtocol.h"
 
+
+const char* const kFieldRemember = "soto:gui:remember";
 
 static const uint32 kMsgOK		= 'cwOK';
 static const uint32 kMsgCancel	= 'cwCa';
@@ -31,6 +34,7 @@ CredentialsWindow::CredentialsWindow(BWindow* parent, const BMessenger& target,
 	fOnCancel(onCancel),
 	fUserField(NULL),
 	fPasswordField(NULL),
+	fRememberBox(NULL),
 	fOKButton(NULL),
 	fCancelButton(NULL),
 	fSent(false)
@@ -49,6 +53,8 @@ CredentialsWindow::CredentialsWindow(BWindow* parent, const BMessenger& target,
 	if (fPasswordField->TextView() != NULL)
 		fPasswordField->TextView()->HideTyping(true);
 
+	fRememberBox = new BCheckBox("remember", "Remember password", NULL);
+
 	fOKButton = new BButton("ok", "Connect", new BMessage(kMsgOK));
 	fOKButton->MakeDefault(true);
 	fCancelButton = new BButton("cancel", "Cancel",
@@ -59,6 +65,7 @@ CredentialsWindow::CredentialsWindow(BWindow* parent, const BMessenger& target,
 		.Add(promptView)
 		.Add(fUserField)
 		.Add(fPasswordField)
+		.Add(fRememberBox)
 		.AddGroup(B_HORIZONTAL, B_USE_DEFAULT_SPACING)
 			.AddGlue()
 			.Add(fCancelButton)
@@ -87,6 +94,8 @@ CredentialsWindow::MessageReceived(BMessage* message)
 			BMessage reply(fOnOK);
 			reply.AddString(kFieldUsername, fUserField->Text());
 			reply.AddString(kFieldPassword, fPasswordField->Text());
+			reply.AddBool(kFieldRemember,
+				fRememberBox->Value() == B_CONTROL_ON);
 			fTarget.SendMessage(&reply);
 			fSent = true;
 			PostMessage(B_QUIT_REQUESTED);

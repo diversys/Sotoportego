@@ -15,6 +15,8 @@
 #include <FilePanel.h>
 #include <Font.h>
 #include <GroupLayout.h>
+#include <Key.h>
+#include <KeyStore.h>
 #include <LayoutBuilder.h>
 #include <ListItem.h>
 #include <ListView.h>
@@ -52,6 +54,14 @@ static const uint32 kMsgCredentialsCancel	= 'gCrC';
 static const uint32 kMsgVaporetto			= 'gVap';
 
 static const char* const kBackendName	= "OpenVPN";
+
+
+// BKeyStore helpers (defined at the bottom of the file).
+static bool		load_stored_credentials(const char* profileName,
+					BString& outUser, BString& outPass);
+static void		save_credentials(const char* profileName, const char* user,
+					const char* password);
+static void		forget_credentials(const char* profileName);
 
 
 MainWindow::MainWindow()
@@ -299,8 +309,17 @@ MainWindow::MessageReceived(BMessage* message)
 		{
 			const char* user = "";
 			const char* pass = "";
+			bool remember = false;
 			message->FindString(kFieldUsername, &user);
 			message->FindString(kFieldPassword, &pass);
+			message->FindBool(kFieldRemember, &remember);
+			if (remember && pass != NULL && *pass != '\0') {
+				const VPNProfile* sel = _SelectedProfile();
+				if (sel != NULL) {
+					save_credentials(sel->fName.String(),
+						user != NULL ? user : "", pass);
+				}
+			}
 			_SendConnectWith(user, pass);
 			break;
 		}
@@ -437,9 +456,21 @@ MainWindow::_BeginConnectFlow()
 		return;
 	}
 
-	// Always prompt for credentials -- we can't reliably know up-front
-	// whether the .ovpn file requires interactive auth, and an empty
-	// prompt is cheap to dismiss for cert-only configs.
+	// If the user previously asked us to remember this profile's password,
+	// skip the dialog and go straight to Connect. The keystore returns
+	// B_ERROR (and may prompt to unlock its keyring) on first access per
+	// session; either way an empty result drops through to the prompt.
+	BString storedUser;
+	BString storedPass;
+	if (load_stored_credentials(selected->fName.String(), storedUser,
+			storedPass)) {
+		_SendConnectWith(storedUser.String(), storedPass.String());
+		return;
+	}
+
+	// Always prompt otherwise -- we can't reliably know up-front whether
+	// the .ovpn file requires interactive auth, and an empty prompt is
+	// cheap to dismiss for cert-only configs.
 	CredentialsWindow* prompt = new CredentialsWindow(this, BMessenger(this),
 		kMsgCredentialsOK, kMsgCredentialsCancel,
 		selected->fName.String(), selected->fUsername);
@@ -776,7 +807,64 @@ MainWindow::_DeleteSelectedProfile()
 	del.AddString(kFieldProfileName, selected->fName);
 	fServer.SendMessage(&del);
 
+	// Drop any stored password for this profile too: leaving a stale key
+	// behind would resurface on a re-import with the same name.
+	forget_credentials(selected->fName.String());
+
 	fSelectedName = "";
+}
+
+
+// --- BKeyStore helpers ----------------------------------------------------
+//
+// We store one BPasswordKey per profile, keyed by profile name. The username
+// rides on the SecondaryIdentifier slot, the password is the key's payload.
+// Purpose is B_KEY_PURPOSE_NETWORK so the keystore browser groups them with
+// other network credentials.
+
+static bool
+load_stored_credentials(const char* profileName, BString& outUser,
+	BString& outPass)
+{
+	if (profileName == NULL || *profileName == '\0')
+		return false;
+	BKeyStore keystore;
+	BPasswordKey key;
+	if (keystore.GetKey(B_KEY_TYPE_PASSWORD, profileName, key) != B_OK)
+		return false;
+	outUser = key.SecondaryIdentifier();
+	outPass = key.Password();
+	return outPass.Length() > 0;
+}
+
+
+static void
+save_credentials(const char* profileName, const char* user,
+	const char* password)
+{
+	if (profileName == NULL || *profileName == '\0' || password == NULL)
+		return;
+	BKeyStore keystore;
+	// AddKey refuses to overwrite, so drop any prior secret for this
+	// profile before saving the new one.
+	BPasswordKey existing;
+	if (keystore.GetKey(B_KEY_TYPE_PASSWORD, profileName, existing) == B_OK)
+		keystore.RemoveKey(existing);
+	BPasswordKey key(password, B_KEY_PURPOSE_NETWORK, profileName,
+		user != NULL ? user : "");
+	keystore.AddKey(key);
+}
+
+
+static void
+forget_credentials(const char* profileName)
+{
+	if (profileName == NULL || *profileName == '\0')
+		return;
+	BKeyStore keystore;
+	BPasswordKey existing;
+	if (keystore.GetKey(B_KEY_TYPE_PASSWORD, profileName, existing) == B_OK)
+		keystore.RemoveKey(existing);
 }
 
 
