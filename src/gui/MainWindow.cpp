@@ -33,6 +33,7 @@
 #include <View.h>
 
 #include "CredentialsWindow.h"
+#include "DeskbarIcon.h"
 #include "HeaderView.h"
 #include "OpenVPNConfigParser.h"
 #include "VPNProfile.h"
@@ -53,6 +54,8 @@ static const uint32 kMsgCredentialsOK		= 'gCrO';
 static const uint32 kMsgCredentialsCancel	= 'gCrC';
 static const uint32 kMsgVaporetto			= 'gVap';
 static const uint32 kMsgForgetPassword		= 'gFor';
+static const uint32 kMsgInstallDeskbar		= 'gDIn';
+static const uint32 kMsgRemoveDeskbar		= 'gDRm';
 
 static const char* const kBackendName	= "OpenVPN";
 
@@ -126,6 +129,13 @@ MainWindow::_BuildLayout()
 	connectionMenu->AddItem(new BMenuItem("Forget saved password",
 		new BMessage(kMsgForgetPassword)));
 	menuBar->AddItem(connectionMenu);
+
+	BMenu* toolsMenu = new BMenu("Tools");
+	toolsMenu->AddItem(new BMenuItem("Install Deskbar icon",
+		new BMessage(kMsgInstallDeskbar)));
+	toolsMenu->AddItem(new BMenuItem("Remove Deskbar icon",
+		new BMessage(kMsgRemoveDeskbar)));
+	menuBar->AddItem(toolsMenu);
 
 	fHeader = new HeaderView("header");
 	fHeader->SetEasterEggTarget(BMessenger(this), kMsgVaporetto);
@@ -352,6 +362,12 @@ MainWindow::MessageReceived(BMessage* message)
 			break;
 		case kMsgForgetPassword:
 			_ForgetSelectedPassword();
+			break;
+		case kMsgInstallDeskbar:
+			_InstallDeskbarIcon();
+			break;
+		case kMsgRemoveDeskbar:
+			_RemoveDeskbarIcon();
 			break;
 		case kMsgProfileSelected:
 		{
@@ -990,6 +1006,38 @@ MainWindow::_SelectedProfile() const
 			return &fProfiles[i];
 	}
 	return NULL;
+}
+
+
+void
+MainWindow::_InstallDeskbarIcon()
+{
+	if (DeskbarIcon::IsInDeskbar()) {
+		BAlert* alert = new BAlert("deskbar",
+			"The Sotoportego icon is already in your Deskbar.", "OK");
+		alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
+		alert->Go(NULL);
+		return;
+	}
+	status_t result = DeskbarIcon::AddToDeskbar();
+	if (result != B_OK) {
+		BString body("Could not install the Deskbar icon: ");
+		body << strerror(result);
+		body << "\n\nIs Deskbar running?";
+		BAlert* alert = new BAlert("deskbarErr", body.String(), "OK",
+			NULL, NULL, B_WIDTH_AS_USUAL, B_STOP_ALERT);
+		alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
+		alert->Go(NULL);
+	}
+}
+
+
+void
+MainWindow::_RemoveDeskbarIcon()
+{
+	if (!DeskbarIcon::IsInDeskbar())
+		return;
+	DeskbarIcon::RemoveFromDeskbar();
 }
 
 

@@ -64,6 +64,14 @@ If Sotoportego saves you time, consider supporting development: [![Buy Me A Coff
   GUI's status bar shows it alongside the connection state.
 * **CLI test client** — `sotoportego_cli` proves the IPC + backend seams
   with a one-shot connect / linger / disconnect round-trip.
+* **Deskbar replicant** — a small "world" glyph with an open/closed
+  padlock overlay sits next to the Deskbar clock, redrawing whenever
+  the session state changes. A single click pops a menu listing every
+  imported profile so you can connect to your preferred server in two
+  clicks; the same menu carries Disconnect, *Open Sotoportego…* and
+  *Remove from Deskbar*. The replicant persists across reboots: it is
+  archived through `BArchivable`, and Deskbar reinstantiates it from
+  the GUI binary on next login via the standard add-on path.
 * **Built-in event log** — every state transition is appended to the
   Statistics tab with a timestamp, so failures are never silent.
 
@@ -128,6 +136,13 @@ The GUI launches the daemon automatically via `be_roster`. From there:
    removes the routes we installed and deletes the `tun/N` interface
    we brought up, so the routing table is left exactly the way it was
    found.
+
+You can also drop the **Tools → Install Deskbar icon** entry into your
+Deskbar from the same window. The replicant subscribes to the daemon
+on its own and stays live whether or not the main window is open; a
+left click on it shows your profile list, lets you connect with two
+clicks, and offers Disconnect / *Open Sotoportego…* / *Remove from
+Deskbar* below. The icon comes back automatically after a reboot.
 
 ### Daemon (manual)
 
@@ -196,7 +211,8 @@ src/server/    The daemon (a BApplication / BLooper), ProfileStore
                worker behind the connect notifications)
 src/cli/       sotoportego_cli — the test client
 src/gui/       Sotoportego — the native GUI client (HeaderView,
-               MainWindow, CredentialsWindow, About, brand HVIF)
+               MainWindow, CredentialsWindow, About, DeskbarIcon
+               replicant, brand HVIF)
 scripts/       verify-tunnel.sh — shell check that the tunnel is
                up *and* actually carrying outbound traffic
 ```

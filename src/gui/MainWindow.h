@@ -71,6 +71,12 @@ private:
 	// prompts again instead of looping on the same bad secret.
 			void				_ForgetSelectedPassword();
 
+	// Deskbar replicant install/uninstall, wired to the Tools menu.
+	// Failures are reported via a BAlert so the user isn't left
+	// wondering whether the click did anything.
+			void				_InstallDeskbarIcon();
+			void				_RemoveDeskbarIcon();
+
 	static	BString				_FormatBytes(int64 bytes);
 
 			BMessenger			fServer;
