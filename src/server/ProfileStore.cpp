@@ -4,7 +4,9 @@
  */
 #include "ProfileStore.h"
 
+#include <errno.h>
 #include <stdio.h>
+#include <unistd.h>
 
 #include <Directory.h>
 #include <File.h>
@@ -140,11 +142,36 @@ ProfileStore::_WriteToDisk() const
 			return result;
 	}
 
-	BFile file(path.Path(), B_WRITE_ONLY | B_CREATE_FILE | B_ERASE_FILE);
+	// Atomic replace: flatten into a sibling temp file and rename() over
+	// the real path. A crash, power cut, or out-of-space halfway through
+	// Flatten leaves the previous, valid `profiles` file in place. The
+	// previous code did B_ERASE_FILE then Flatten, which truncated the
+	// real file first -- if anything went wrong before Flatten finished,
+	// the daemon woke up next time to an empty profile list.
+	BString tempPath(path.Path());
+	tempPath << ".tmp";
+
+	BFile file(tempPath.String(),
+		B_WRITE_ONLY | B_CREATE_FILE | B_ERASE_FILE);
 	if (file.InitCheck() != B_OK)
 		return file.InitCheck();
 
-	return stored.Flatten(&file);
+	result = stored.Flatten(&file);
+	if (result != B_OK) {
+		unlink(tempPath.String());
+		return result;
+	}
+
+	// Close BEFORE rename so the data is flushed to disk; BFile flushes
+	// on destruction but we want the rename ordered after the flush.
+	file.Unset();
+
+	if (rename(tempPath.String(), path.Path()) != 0) {
+		status_t renameErr = errno;
+		unlink(tempPath.String());
+		return renameErr;
+	}
+	return B_OK;
 }
 
 
