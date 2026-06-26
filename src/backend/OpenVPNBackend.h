@@ -50,9 +50,12 @@ private:
 			bool				_SpawnOpenVPN(const VPNProfile& profile);
 			bool				_ConnectManagementSocket();
 			void				_StartReader();
+			void				_StartStderrReader();
 			void				_Cleanup(bool wait);
 			int32				_RunReaderLoop();
+			int32				_RunStderrLoop();
 	static	int32				_ReaderEntry(void* self);
+	static	int32				_StderrReaderEntry(void* self);
 
 	// Write a random one-shot password to a temp file so openvpn can
 	// authenticate clients to its management interface. Returns the
@@ -98,13 +101,23 @@ private:
 			BString				fTunPeer;
 			BString				fInstalledServerIP;
 			bool				fRoutesInstalled;
+	// Which Haiku tunnel slot we ended up using this session: e.g. "tun/0"
+	// for the interface name (passed to ifconfig and route) and "/dev/tun/0"
+	// for the device node (passed to openvpn via --dev-node). Picked at
+	// Connect() time by scanning for the first free slot, since previous
+	// tun/N instances can land in a stuck state that ifconfig refuses to
+	// re-add until reboot.
+			BString				fTunInterface;
+			BString				fTunNode;
 			OpenVPNManagement	fManagement;
 
 	// Live process / connection. Owned by Connect()/_Cleanup().
 			pid_t				fPid;			// openvpn pid, -1 when none
 			int					fSocket;		// management TCP fd, -1 when none
+			int					fStderrFd;		// child stderr read end, -1 when none
 			int					fMgmtPort;		// chosen at spawn time
 			thread_id			fReader;		// -1 when no thread alive
+			thread_id			fStderrReader;	// -1 when no thread alive
 			bool				fStopRequested;	// true after Disconnect()
 	// Random one-shot password the daemon uses to authenticate to the
 	// openvpn management socket. Lives in a temp file passed to openvpn

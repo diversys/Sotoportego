@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -29,6 +30,7 @@
 // Private 'what' codes posted from worker contexts back to the looper.
 static const uint32 kMsgInternalEvent	= 'oEvt';
 static const uint32 kMsgReaderExited	= 'oRDr';
+static const uint32 kMsgLogLine			= 'oLog';
 
 // Reader buffer size; openvpn lines are short.
 static const size_t kReaderBufferSize	= 2048;
@@ -154,11 +156,15 @@ OpenVPNBackend::OpenVPNBackend()
 	fTunPeer(),
 	fInstalledServerIP(),
 	fRoutesInstalled(false),
+	fTunInterface(),
+	fTunNode(),
 	fManagement(),
 	fPid(-1),
 	fSocket(-1),
+	fStderrFd(-1),
 	fMgmtPort(0),
 	fReader(-1),
+	fStderrReader(-1),
 	fStopRequested(false)
 {
 	srand((unsigned)time(NULL) ^ (unsigned)find_thread(NULL));
@@ -206,14 +212,44 @@ OpenVPNBackend::Connect(const VPNProfile& profile)
 	printf("[OpenVPN] connect requested: profile='%s' config='%s'\n",
 		fProfile.fName.String(), fProfile.fConfigPath.String());
 
-	// Haiku cannot allocate TUN/TAP devices dynamically; openvpn's open_tun
-	// just iterates /dev/tun/0 .. /dev/tun/255 and uses the first one that
-	// exists. `ifconfig tun/0 up` publishes that device through the kernel
-	// add-on. Safe to run if the interface already exists.
-	const char* const ifconfigUp[] = { "ifconfig", "tun/0", "up", NULL };
-	if (!run_ifconfig(ifconfigUp)) {
+	// Haiku publishes tunnel character devices at /dev/tun/N. ifconfig <name>
+	// up publishes that device through the kernel add-on. A previous session
+	// can leave a slot in a stuck state where ifconfig refuses to re-add it
+	// ("General system error"), so we delete first (idempotent: succeeds even
+	// if the slot wasn't there) and only then bring it up. We scan upward
+	// until we find a slot that takes, in case multiple slots are stuck.
+	//
+	// Note: we deliberately do NOT pre-assign an address (e.g. 0.0.0.0)
+	// before openvpn starts. With --dev-node /dev/tun/N openvpn opens the
+	// device very early; if the interface already has an address bound to
+	// it, that open blocks on Haiku and openvpn goes silent forever after
+	// `hold release`. Plain `up` works.
+	fTunInterface = "";
+	fTunNode = "";
+	for (int slot = 0; slot < 8; slot++) {
+		BString interfaceName;
+		interfaceName << "tun/" << slot;
+
+		const char* const ifconfigDelete[] = {
+			"ifconfig", "--delete", interfaceName.String(), NULL
+		};
+		run_ifconfig(ifconfigDelete);
+
+		const char* const ifconfigUp[] = {
+			"ifconfig", interfaceName.String(), "up", NULL
+		};
+		if (run_ifconfig(ifconfigUp)) {
+			fTunInterface = interfaceName;
+			fTunNode = "";
+			fTunNode << "/dev/tun/" << slot;
+			printf("[OpenVPN] using %s (%s)\n",
+				fTunInterface.String(), fTunNode.String());
+			break;
+		}
+	}
+	if (fTunInterface.Length() == 0) {
 		_SetState(VPN_STATE_ERROR,
-			"could not create tun/0 (is the tunnel kernel add-on present?)");
+			"no usable tun slot (every /dev/tun/N is stuck; reboot needed?)");
 		return B_ERROR;
 	}
 
@@ -229,21 +265,24 @@ OpenVPNBackend::Connect(const VPNProfile& profile)
 		return B_ERROR;
 	}
 
-	// FIRST command on the socket MUST be the password, because
-	// --management ... <pwfile> puts openvpn into "authenticate-or-drop"
-	// mode. Anything else gets the connection closed.
+	// FIRST line on the socket MUST be the random session password from
+	// the file we passed via `--management ... <pwfile>`. openvpn closes
+	// the connection on any other first input. This is what stops a local
+	// process that races us to 127.0.0.1:<fMgmtPort> from driving the
+	// tunnel (signal SIGTERM, sniff credentials, swap state).
 	_SendCommand(fMgmtPassword.String());
 
-	// Subscribe to the events we care about, then let openvpn proceed past
-	// the management-hold. `log on` is what makes openvpn echo its stderr
-	// lines through management, which is how _ScanLogLine() picks up the
-	// values used by the route fix-up.
+	// Subscribe to state and throughput, then let openvpn move past the
+	// management-hold gate. ROUTE_GATEWAY and PUSH_REPLY -- the values
+	// _ScanLogLine needs for the route fix-up -- are NOT collected via
+	// `log on` (it deadlocks openvpn on Haiku right after `hold release`)
+	// but via the stderr pipe we just wired up.
 	_SendCommand("state on");
 	_SendCommand("bytecount 1");
-	_SendCommand("log on all");
 	_SendCommand("hold release");
 
 	_StartReader();
+	_StartStderrReader();
 	return B_OK;
 }
 
@@ -363,6 +402,19 @@ OpenVPNBackend::MessageReceived(BMessage* message)
 				_SetState(VPN_STATE_DISCONNECTED);
 			break;
 
+		case kMsgLogLine:
+		{
+			// One line of openvpn's stderr, scraped by the stderr-reader
+			// thread. _ScanLogLine has to run on the looper because it
+			// mutates fields that _InstallRoutes (also on the looper)
+			// reads.
+			const char* line = "";
+			message->FindString("line", &line);
+			if (line != NULL && line[0] != '\0')
+				_ScanLogLine(std::string(line));
+			break;
+		}
+
 		default:
 			VPNBackend::MessageReceived(message);
 			break;
@@ -442,15 +494,23 @@ OpenVPNBackend::_SpawnOpenVPN(const VPNProfile& profile)
 
 	// Build argv. posix_spawnp wants char*; the strings live for the
 	// duration of the call only, so casting away const here is fine.
+	//
 	// --management ... <pwfile> tells openvpn to read the first line of
 	// pwfile and require it as the first command on the socket -- so the
 	// daemon's first send is the password, NOT 'state on'.
-	// --route-noexec stops openvpn from installing routes itself. The Haiku
-	// port hardcodes the physical interface for every route it adds, so
-	// the redirect-gateway routes end up on wifi instead of tun/0 and
-	// traffic disappears. We re-install them ourselves in _InstallRoutes()
-	// once we have CONNECTED and have parsed the values we need out of
-	// openvpn's log stream.
+	//
+	// --route-noexec keeps openvpn out of the routing table; the Haiku
+	// port adds every pushed route on the underlying physical interface
+	// (e.g. wifi) instead of on the tun slot, so redirect-gateway routes
+	// land on wifi and tunnel traffic disappears. _InstallRoutes()
+	// re-applies the right routes once CONNECTED arrives and
+	// _ScanLogLine has captured ROUTE_GATEWAY + PUSH_REPLY from the
+	// child's stderr.
+	//
+	// --ifconfig-noexec keeps openvpn from re-running ifconfig on the
+	// tunnel device; we already brought the slot up ourselves in
+	// Connect() and we re-issue ifconfig with the pushed local/peer IPs
+	// in _HandleManagementEvent when CONNECTED arrives.
 	char* argv[] = {
 		(char*)"openvpn",
 		(char*)"--config", (char*)profile.fConfigPath.String(),
@@ -459,16 +519,68 @@ OpenVPNBackend::_SpawnOpenVPN(const VPNProfile& profile)
 		(char*)"--management-hold",
 		(char*)"--management-query-passwords",
 		(char*)"--route-noexec",
+		(char*)"--ifconfig-noexec",
 		(char*)"--verb", (char*)"3",
 		NULL
 	};
 
-	pid_t pid = -1;
-	int rc = posix_spawnp(&pid, "openvpn", NULL, NULL, argv, environ);
-	if (rc != 0) {
-		fprintf(stderr, "[OpenVPN] posix_spawnp failed: %s\n", strerror(rc));
+	// The daemon is a BApplication and has a non-trivial bag of internal
+	// file descriptors open (the BeAPI port / BMessage plumbing). When we
+	// spawned openvpn with `posix_spawnp(..., NULL, ...)` those descriptors
+	// got inherited, and on Haiku at least one of them makes openvpn go
+	// completely silent right after `hold release` -- alive but never
+	// emitting >STATE:RESOLVE. Manually driving openvpn from a clean shell
+	// makes it proceed fine, which is what isolated the cause to fd
+	// inheritance.
+	//
+	// posix_spawn_file_actions_addclose() can't be used to close every
+	// descriptor above stderr because Haiku rejects the whole spawn the
+	// moment one of those queued closes hits a descriptor that the parent
+	// no longer has open (BApp closes and reopens its internal ports
+	// between our scan and the spawn). fork()+execvp() lets the child
+	// itself decide which descriptors to close, with no race window.
+	struct rlimit rl;
+	int maxFd = 1024;
+	if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY)
+		maxFd = (int)rl.rlim_cur;
+
+	// Pipe openvpn's stderr back to us so the stderr-reader thread can
+	// feed lines into _ScanLogLine() and pick up ROUTE_GATEWAY +
+	// PUSH_REPLY. `log on` over management would do the same thing in
+	// theory, but on Haiku enabling it just before `hold release`
+	// deadlocks openvpn (no >STATE:RESOLVE ever fires).
+	int stderrPipe[2];
+	if (pipe(stderrPipe) != 0) {
+		fprintf(stderr, "[OpenVPN] pipe failed: %s\n", strerror(errno));
 		return false;
 	}
+
+	pid_t pid = fork();
+	if (pid < 0) {
+		fprintf(stderr, "[OpenVPN] fork failed: %s\n", strerror(errno));
+		close(stderrPipe[0]);
+		close(stderrPipe[1]);
+		return false;
+	}
+	if (pid == 0) {
+		// Child. Anything beyond fd surgery and exec'ing is unsafe in a
+		// multi-threaded fork, so keep this section minimal. Redirect
+		// stderr to the write end of our pipe BEFORE the close-all loop
+		// (the loop would otherwise close the pipe's fds out from under
+		// us).
+		if (dup2(stderrPipe[1], STDERR_FILENO) < 0)
+			_exit(127);
+		for (int fd = 3; fd < maxFd; fd++)
+			close(fd);
+		execvp("openvpn", argv);
+		// If we got here, exec failed.
+		_exit(127);
+	}
+
+	// Parent: close the write end so we get EOF on the read end when
+	// openvpn exits. Keep the read end for the stderr-reader thread.
+	close(stderrPipe[1]);
+	fStderrFd = stderrPipe[0];
 
 	fPid = pid;
 	printf("[OpenVPN] spawned openvpn pid=%d mgmt=127.0.0.1:%d\n",
@@ -537,10 +649,67 @@ OpenVPNBackend::_StartReader()
 }
 
 
+void
+OpenVPNBackend::_StartStderrReader()
+{
+	if (fStderrFd < 0)
+		return;
+	fStderrReader = spawn_thread(_StderrReaderEntry, "openvpn-stderr",
+		B_NORMAL_PRIORITY, this);
+	if (fStderrReader < B_OK) {
+		fprintf(stderr, "[OpenVPN] spawn_thread (stderr) failed\n");
+		fStderrReader = -1;
+		return;
+	}
+	resume_thread(fStderrReader);
+}
+
+
 int32
 OpenVPNBackend::_ReaderEntry(void* self)
 {
 	return ((OpenVPNBackend*)self)->_RunReaderLoop();
+}
+
+
+int32
+OpenVPNBackend::_StderrReaderEntry(void* self)
+{
+	return ((OpenVPNBackend*)self)->_RunStderrLoop();
+}
+
+
+int32
+OpenVPNBackend::_RunStderrLoop()
+{
+	// Accumulate the byte stream into newline-terminated lines and dispatch
+	// each one to the looper. _ScanLogLine writes the fields _InstallRoutes
+	// reads, so it MUST run on the looper thread to stay serialised with
+	// the management-event handler (which calls _InstallRoutes on
+	// CONNECTED).
+	char buffer[kReaderBufferSize];
+	std::string line;
+	while (true) {
+		ssize_t got = read(fStderrFd, buffer, sizeof(buffer));
+		if (got < 0 && errno == EINTR)
+			continue;
+		if (got <= 0)
+			break;
+		for (ssize_t i = 0; i < got; i++) {
+			char c = buffer[i];
+			if (c == '\n') {
+				if (!line.empty()) {
+					BMessage message(kMsgLogLine);
+					message.AddString("line", line.c_str());
+					BMessenger(this).SendMessage(&message);
+				}
+				line.clear();
+			} else if (c != '\r') {
+				line += c;
+			}
+		}
+	}
+	return B_OK;
 }
 
 
@@ -596,10 +765,23 @@ OpenVPNBackend::_Cleanup(bool wait)
 		fSocket = -1;
 	}
 
+	if (fStderrFd >= 0) {
+		// Closing makes the stderr-reader's read() return 0 next iteration
+		// so the thread can exit without us having to send it a signal.
+		close(fStderrFd);
+		fStderrFd = -1;
+	}
+
 	if (fReader > 0 && wait) {
 		status_t exitCode = 0;
 		wait_for_thread(fReader, &exitCode);
 		fReader = -1;
+	}
+
+	if (fStderrReader > 0 && wait) {
+		status_t exitCode = 0;
+		wait_for_thread(fStderrReader, &exitCode);
+		fStderrReader = -1;
 	}
 
 	if (fPid > 0) {
@@ -635,15 +817,17 @@ OpenVPNBackend::_Cleanup(bool wait)
 	// is already gone.
 	_RemoveRoutes();
 
-	// Tear tun/0 out of the interface list entirely. `ifconfig tun/0 down`
-	// only deactivates it -- the interface stays around with whatever IP
-	// openvpn pushed onto it, and the next Connect would inherit a stale
-	// address. `--delete` removes the interface; the kernel tunnel add-on
-	// republishes it next time we ifconfig it up.
-	const char* const ifconfigDelete[] = {
-		"ifconfig", "--delete", "tun/0", NULL
-	};
-	run_ifconfig(ifconfigDelete);
+	// Tear the tun slot we used out of the interface list entirely.
+	// `ifconfig <iface> down` only deactivates it -- the interface stays
+	// around with whatever IP openvpn pushed onto it, and the next Connect
+	// would inherit a stale address. `--delete` removes the interface; the
+	// kernel tunnel add-on republishes it next time we ifconfig it up.
+	if (fTunInterface.Length() > 0) {
+		const char* const ifconfigDelete[] = {
+			"ifconfig", "--delete", fTunInterface.String(), NULL
+		};
+		run_ifconfig(ifconfigDelete);
+	}
 
 	fLocalIP = "";
 	fAuthUsername = "";
@@ -651,6 +835,8 @@ OpenVPNBackend::_Cleanup(bool wait)
 	fOrigGateway = "";
 	fOrigGatewayIface = "";
 	fTunPeer = "";
+	fTunInterface = "";
+	fTunNode = "";
 	_RemoveMgmtPasswordFile();
 }
 
@@ -730,6 +916,22 @@ OpenVPNBackend::_HandleManagementEvent(const OpenVPNEvent& event)
 					fLocalIP = event.localIP.c_str();
 				if (!event.remoteIP.empty())
 					fRemoteIP = event.remoteIP.c_str();
+				// The Haiku openvpn port runs `/bin/ifconfig tun inet
+				// <ip> <peer> ...` itself, but it passes the unqualified
+				// "tun" name and ifconfig rejects it with "No such
+				// device". --ifconfig-noexec keeps openvpn out of our
+				// way; we do the call here with the slot we actually
+				// own. fTunPeer comes from the PUSH_REPLY's
+				// route-gateway, captured by _ScanLogLine.
+				if (fTunInterface.Length() > 0 && fLocalIP.Length() > 0
+						&& fTunPeer.Length() > 0) {
+					const char* const ifconfigUp[] = {
+						"ifconfig", fTunInterface.String(), "inet",
+						fLocalIP.String(), fTunPeer.String(),
+						"mtu", "1500", "up", NULL
+					};
+					run_ifconfig(ifconfigUp);
+				}
 				// All the values needed for the route fix-up have been
 				// scanned out of the preceding log lines (ROUTE_GATEWAY
 				// and PUSH_REPLY). event.remoteIP is the VPN server's
@@ -886,15 +1088,15 @@ OpenVPNBackend::_InstallRoutes(const BString& vpnServerIP)
 	run_route(serverPin);
 
 	// 2,3) Replace the system default route with two /1 routes pointing at
-	// the tunnel peer over tun/0. Two halves win over the existing 0.0.0.0/0
-	// by longest-prefix match, so we don't have to touch the original
-	// default.
+	// the tunnel peer over the tun interface this session is using. Two
+	// halves win over the existing 0.0.0.0/0 by longest-prefix match, so
+	// we don't have to touch the original default.
 	const char* const lower[] = {
-		"route", "add", "tun/0", "inet", "0.0.0.0",
+		"route", "add", fTunInterface.String(), "inet", "0.0.0.0",
 		"gw", fTunPeer.String(), "netmask", "128.0.0.0", NULL
 	};
 	const char* const upper[] = {
-		"route", "add", "tun/0", "inet", "128.0.0.0",
+		"route", "add", fTunInterface.String(), "inet", "128.0.0.0",
 		"gw", fTunPeer.String(), "netmask", "128.0.0.0", NULL
 	};
 	run_route(lower);
@@ -912,11 +1114,11 @@ OpenVPNBackend::_RemoveRoutes()
 		return;
 
 	const char* const upper[] = {
-		"route", "delete", "tun/0", "inet", "128.0.0.0",
+		"route", "delete", fTunInterface.String(), "inet", "128.0.0.0",
 		"gw", fTunPeer.String(), "netmask", "128.0.0.0", NULL
 	};
 	const char* const lower[] = {
-		"route", "delete", "tun/0", "inet", "0.0.0.0",
+		"route", "delete", fTunInterface.String(), "inet", "0.0.0.0",
 		"gw", fTunPeer.String(), "netmask", "128.0.0.0", NULL
 	};
 	const char* const serverPin[] = {

@@ -123,13 +123,16 @@ SotoportegoCLI::_EnsureServer()
 void
 SotoportegoCLI::_SendConnect()
 {
-	// A representative (but inert) profile. Real .ovpn parsing comes later.
+	// A representative profile pointing at a real .ovpn so we can exercise
+	// the live backend end to end.
 	VPNProfile profile;
 	profile.fBackendType = VPN_BACKEND_OPENVPN;
 	profile.fName = "Demo Profile";
-	profile.fServer = "vpn.example.com";
-	profile.fPort = 1194;
-	profile.fUsername = "demo";
+	profile.fServer = "public-vpn-219.opengw.net";
+	profile.fPort = 443;
+	profile.fUsername = "vpn";
+	profile.fConfigPath
+		= "/boot/home/Desktop/vpngate_public-vpn-219.opengw.net_tcp_443.ovpn";
 
 	BMessage archive;
 	profile.Archive(&archive);
