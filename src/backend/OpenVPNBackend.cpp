@@ -447,6 +447,10 @@ OpenVPNBackend::_RunReaderLoop()
 	char buffer[kReaderBufferSize];
 	while (true) {
 		ssize_t got = recv(fSocket, buffer, sizeof(buffer), 0);
+		if (got < 0 && errno == EINTR) {
+			// A signal interrupted the syscall; keep listening.
+			continue;
+		}
 		if (got <= 0)
 			break;
 
@@ -554,9 +558,33 @@ OpenVPNBackend::_SendCommand(const char* line)
 {
 	if (fSocket < 0 || line == NULL)
 		return;
+
+	// Build the framed line once so a partial send can be resumed from the
+	// right offset. Management is line-oriented: if we only send half, the
+	// remote interprets a corrupted command and we lose protocol sync.
 	size_t length = strlen(line);
-	send(fSocket, line, length, 0);
-	send(fSocket, "\n", 1, 0);
+	std::string framed;
+	framed.reserve(length + 1);
+	framed.append(line, length);
+	framed.push_back('\n');
+
+	const char* data = framed.data();
+	size_t remaining = framed.size();
+	while (remaining > 0) {
+		// MSG_NOSIGNAL stops a broken pipe from killing the whole daemon
+		// when openvpn disappears mid-write; the EPIPE return is enough.
+		ssize_t wrote = send(fSocket, data, remaining, MSG_NOSIGNAL);
+		if (wrote > 0) {
+			data += wrote;
+			remaining -= (size_t)wrote;
+			continue;
+		}
+		if (wrote < 0 && errno == EINTR)
+			continue;
+		// Any other error (EPIPE, ECONNRESET, EBADF, ...) means the socket
+		// is gone; the reader thread will see EOF and unwind.
+		break;
+	}
 }
 
 
