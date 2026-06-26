@@ -194,6 +194,15 @@ OpenVPNBackend::Connect(const VPNProfile& profile)
 	fRemoteIP = profile.fServer;
 	fStopRequested = false;
 
+	// Take ownership of the "we're connecting" status BEFORE we do any
+	// blocking work below. The check above is not an atomic test-and-set,
+	// so a second Connect() arriving while we're still spawning would
+	// otherwise sail past it and start a second openvpn process whose
+	// pid would overwrite ours -- leaving the first openvpn unreapable.
+	// _SetState here also pushes "Connecting" to subscribers immediately
+	// instead of after the spawn finishes.
+	_SetState(VPN_STATE_CONNECTING);
+
 	printf("[OpenVPN] connect requested: profile='%s' config='%s'\n",
 		fProfile.fName.String(), fProfile.fConfigPath.String());
 
@@ -213,8 +222,6 @@ OpenVPNBackend::Connect(const VPNProfile& profile)
 			"could not start openvpn (is it installed?)");
 		return B_ERROR;
 	}
-
-	_SetState(VPN_STATE_CONNECTING);
 
 	if (!_ConnectManagementSocket()) {
 		_Cleanup(true);
@@ -474,6 +481,14 @@ bool
 OpenVPNBackend::_ConnectManagementSocket()
 {
 	for (int attempt = 0; attempt < kMgmtConnectAttempts; attempt++) {
+		// If a Disconnect() landed while we were sleeping in the retry
+		// loop, abandon the connect attempt. Without this the loop would
+		// burn through its full 5s timeout before the cleanup path could
+		// run, and the user would see the state stuck on "Connecting"
+		// long after they asked to cancel.
+		if (fStopRequested)
+			return false;
+
 		// If the child died while we were waiting, abort early.
 		int status = 0;
 		pid_t reaped = waitpid(fPid, &status, WNOHANG);
