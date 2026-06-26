@@ -54,12 +54,32 @@ extern "C" char** environ;
 static std::string
 escape_arg(const BString& value)
 {
+	// The management protocol is line-oriented: '\n' (and the rare '\r')
+	// embedded in an argument would terminate the command early and turn
+	// the tail into a second, injected command. We have to escape those in
+	// addition to '\' and '"'.
 	std::string out;
 	const char* s = value.String();
 	for (size_t i = 0; s[i] != '\0'; i++) {
-		if (s[i] == '\\' || s[i] == '"')
-			out += '\\';
-		out += s[i];
+		char c = s[i];
+		switch (c) {
+			case '\\':
+			case '"':
+				out += '\\';
+				out += c;
+				break;
+			case '\n':
+				out += '\\';
+				out += 'n';
+				break;
+			case '\r':
+				out += '\\';
+				out += 'r';
+				break;
+			default:
+				out += c;
+				break;
+		}
 	}
 	return out;
 }
