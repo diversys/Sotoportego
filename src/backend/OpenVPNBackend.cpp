@@ -202,6 +202,11 @@ OpenVPNBackend::Connect(const VPNProfile& profile)
 		return B_ERROR;
 	}
 
+	// FIRST command on the socket MUST be the password, because
+	// --management ... <pwfile> puts openvpn into "authenticate-or-drop"
+	// mode. Anything else gets the connection closed.
+	_SendCommand(fMgmtPassword.String());
+
 	// Subscribe to the events we care about, then let openvpn proceed past
 	// the management-hold. `log on` is what makes openvpn echo its stderr
 	// lines through management, which is how _ScanLogLine() picks up the
@@ -341,6 +346,56 @@ OpenVPNBackend::MessageReceived(BMessage* message)
 // --- lifecycle -------------------------------------------------------------
 
 bool
+OpenVPNBackend::_CreateMgmtPasswordFile()
+{
+	// 32 hex chars of entropy is plenty for a one-shot local secret.
+	char token[33];
+	for (int i = 0; i < 32; i++) {
+		// Mix two rand() calls and a thread id so that a recently re-seeded
+		// rand on an attacker process can't replay last second's token.
+		unsigned mixed = (unsigned)rand() ^ (unsigned)(rand() << 4)
+			^ (unsigned)find_thread(NULL) ^ (unsigned)system_time();
+		token[i] = "0123456789abcdef"[mixed & 0xf];
+	}
+	token[32] = '\0';
+	fMgmtPassword = token;
+
+	// mkstemp() picks a unique name AND opens the fd 0600, which avoids the
+	// classic "predictable temp name" race. We write the token + newline
+	// (openvpn requires the trailing \n) and unlink on _Cleanup().
+	char path[] = "/tmp/sotoportego.mgmtXXXXXX";
+	int fd = mkstemp(path);
+	if (fd < 0) {
+		fprintf(stderr, "[OpenVPN] mkstemp failed: %s\n", strerror(errno));
+		fMgmtPassword = "";
+		return false;
+	}
+	std::string line(token);
+	line.push_back('\n');
+	ssize_t wrote = write(fd, line.data(), line.size());
+	close(fd);
+	if (wrote != (ssize_t)line.size()) {
+		unlink(path);
+		fMgmtPassword = "";
+		return false;
+	}
+	fMgmtPasswordFile = path;
+	return true;
+}
+
+
+void
+OpenVPNBackend::_RemoveMgmtPasswordFile()
+{
+	if (fMgmtPasswordFile.Length() > 0) {
+		unlink(fMgmtPasswordFile.String());
+		fMgmtPasswordFile = "";
+	}
+	fMgmtPassword = "";
+}
+
+
+bool
 OpenVPNBackend::_SpawnOpenVPN(const VPNProfile& profile)
 {
 	// Pick a port now so the same string can go into the argv. A real
@@ -349,8 +404,20 @@ OpenVPNBackend::_SpawnOpenVPN(const VPNProfile& profile)
 	char portStr[16];
 	snprintf(portStr, sizeof(portStr), "%d", fMgmtPort);
 
+	// Random per-session password gating the management socket. Without
+	// this any local process can connect to 127.0.0.1:<fMgmtPort> and drive
+	// openvpn (signal SIGTERM, swap our credentials, read tunnel events).
+	if (!_CreateMgmtPasswordFile()) {
+		fprintf(stderr,
+			"[OpenVPN] could not write management password file\n");
+		return false;
+	}
+
 	// Build argv. posix_spawnp wants char*; the strings live for the
 	// duration of the call only, so casting away const here is fine.
+	// --management ... <pwfile> tells openvpn to read the first line of
+	// pwfile and require it as the first command on the socket -- so the
+	// daemon's first send is the password, NOT 'state on'.
 	// --route-noexec stops openvpn from installing routes itself. The Haiku
 	// port hardcodes the physical interface for every route it adds, so
 	// the redirect-gateway routes end up on wifi instead of tun/0 and
@@ -361,6 +428,7 @@ OpenVPNBackend::_SpawnOpenVPN(const VPNProfile& profile)
 		(char*)"openvpn",
 		(char*)"--config", (char*)profile.fConfigPath.String(),
 		(char*)"--management", (char*)"127.0.0.1", portStr,
+			(char*)fMgmtPasswordFile.String(),
 		(char*)"--management-hold",
 		(char*)"--management-query-passwords",
 		(char*)"--route-noexec",
@@ -548,6 +616,7 @@ OpenVPNBackend::_Cleanup(bool wait)
 	fOrigGateway = "";
 	fOrigGatewayIface = "";
 	fTunPeer = "";
+	_RemoveMgmtPasswordFile();
 }
 
 

@@ -54,6 +54,13 @@ private:
 			int32				_RunReaderLoop();
 	static	int32				_ReaderEntry(void* self);
 
+	// Write a random one-shot password to a temp file so openvpn can
+	// authenticate clients to its management interface. Returns the
+	// final path on success (also stored in fMgmtPasswordFile) or empty
+	// on failure. The file is unlinked from _Cleanup().
+			bool				_CreateMgmtPasswordFile();
+			void				_RemoveMgmtPasswordFile();
+
 	// --- protocol ------------------------------------------------------
 			void				_SendCommand(const char* line);
 			void				_PostEvent(const OpenVPNEvent& event);
@@ -99,6 +106,12 @@ private:
 			int					fMgmtPort;		// chosen at spawn time
 			thread_id			fReader;		// -1 when no thread alive
 			bool				fStopRequested;	// true after Disconnect()
+	// Random one-shot password the daemon uses to authenticate to the
+	// openvpn management socket. Lives in a temp file passed to openvpn
+	// via --management; sent as the first line on the socket so any
+	// other local process that races us to the port gets disconnected.
+			BString				fMgmtPassword;
+			BString				fMgmtPasswordFile;
 };
 
 
