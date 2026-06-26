@@ -259,6 +259,13 @@ OpenVPNBackend::Connect(const VPNProfile& profile)
 		return B_ERROR;
 	}
 
+	// Start the stderr-reader BEFORE the management connect. If openvpn
+	// refuses to start (bad --dev-node, bad .ovpn, missing cert, anything
+	// printed to stderr before it opens the management socket), we'd
+	// otherwise close the pipe in _Cleanup() and lose the actual reason --
+	// the user would only see "could not reach openvpn management port".
+	_StartStderrReader();
+
 	if (!_ConnectManagementSocket()) {
 		_Cleanup(true);
 		_SetState(VPN_STATE_ERROR, "could not reach openvpn management port");
@@ -276,13 +283,12 @@ OpenVPNBackend::Connect(const VPNProfile& profile)
 	// management-hold gate. ROUTE_GATEWAY and PUSH_REPLY -- the values
 	// _ScanLogLine needs for the route fix-up -- are NOT collected via
 	// `log on` (it deadlocks openvpn on Haiku right after `hold release`)
-	// but via the stderr pipe we just wired up.
+	// but via the stderr pipe wired up by _StartStderrReader() above.
 	_SendCommand("state on");
 	_SendCommand("bytecount 1");
 	_SendCommand("hold release");
 
 	_StartReader();
-	_StartStderrReader();
 	return B_OK;
 }
 
@@ -407,11 +413,16 @@ OpenVPNBackend::MessageReceived(BMessage* message)
 			// One line of openvpn's stderr, scraped by the stderr-reader
 			// thread. _ScanLogLine has to run on the looper because it
 			// mutates fields that _InstallRoutes (also on the looper)
-			// reads.
+			// reads. We also echo every line to our own stderr so the
+			// daemon log carries the full openvpn output -- otherwise
+			// failures like a missing CA file would be invisible to whoever
+			// is reading the log.
 			const char* line = "";
 			message->FindString("line", &line);
-			if (line != NULL && line[0] != '\0')
+			if (line != NULL && line[0] != '\0') {
+				fprintf(stderr, "[OpenVPN] %s\n", line);
 				_ScanLogLine(std::string(line));
+			}
 			break;
 		}
 
@@ -511,9 +522,16 @@ OpenVPNBackend::_SpawnOpenVPN(const VPNProfile& profile)
 	// tunnel device; we already brought the slot up ourselves in
 	// Connect() and we re-issue ifconfig with the pushed local/peer IPs
 	// in _HandleManagementEvent when CONNECTED arrives.
+	// --dev-node points openvpn at the character device the Haiku tunnel
+	// add-on publishes when we did `ifconfig tun/N up` above. Without it
+	// open_tun() falls back to the BSD-style dynamic guess ("/dev/tun0",
+	// "/dev/tun1", ...), none of which exist on Haiku (the path has a slash:
+	// /dev/tun/N), and openvpn dies with "Cannot allocate TUN/TAP dev
+	// dynamically" before its management socket is even open.
 	char* argv[] = {
 		(char*)"openvpn",
 		(char*)"--config", (char*)profile.fConfigPath.String(),
+		(char*)"--dev-node", (char*)fTunNode.String(),
 		(char*)"--management", (char*)"127.0.0.1", portStr,
 			(char*)fMgmtPasswordFile.String(),
 		(char*)"--management-hold",
