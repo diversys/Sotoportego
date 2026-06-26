@@ -65,10 +65,18 @@ HeaderView::HeaderView(const char* name)
 	fEasterTarget(),
 	fEasterWhat(0),
 	fLastTileClick(0),
-	fTileClickStreak(0)
+	fTileClickStreak(0),
+	fCachedIcon(NULL),
+	fCachedIconSize(0.0f)
 {
 	SetViewColor(kHeaderBg);
 	SetLowColor(kHeaderBg);
+}
+
+
+HeaderView::~HeaderView()
+{
+	delete fCachedIcon;
 }
 
 
@@ -158,15 +166,23 @@ _RenderHvif(float size)
 void
 HeaderView::_DrawLogoTile(BRect rect)
 {
-	BBitmap* icon = _RenderHvif(rect.Width());
-	if (icon != NULL) {
+	// Rasterising the HVIF is non-trivial (BIconUtils + RGBA allocation).
+	// Cache the result and reuse it as long as the requested size doesn't
+	// change -- Draw() runs on every Invalidate, which means every state
+	// transition, every subtitle change and every window resize.
+	if (fCachedIcon == NULL || fCachedIconSize != rect.Width()) {
+		delete fCachedIcon;
+		fCachedIcon = _RenderHvif(rect.Width());
+		fCachedIconSize = rect.Width();
+	}
+
+	if (fCachedIcon != NULL) {
 		// Alpha-blend the icon so transparent pixels keep the slate header
 		// visible underneath.
 		SetDrawingMode(B_OP_ALPHA);
 		SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
-		DrawBitmap(icon, rect.LeftTop());
+		DrawBitmap(fCachedIcon, rect.LeftTop());
 		SetDrawingMode(B_OP_COPY);
-		delete icon;
 		return;
 	}
 

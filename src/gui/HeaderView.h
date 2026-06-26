@@ -25,6 +25,7 @@ class BBitmap;
 class HeaderView : public BView {
 public:
 								HeaderView(const char* name);
+	virtual						~HeaderView();
 
 			// Update the state (drives the status-dot color) and the
 			// metadata line (e.g. "Disconnected" or "Connected - vpn:1194").
@@ -59,6 +60,13 @@ private:
 			uint32				fEasterWhat;
 			bigtime_t			fLastTileClick;
 			int32				fTileClickStreak;
+
+	// Cached rasterised HVIF for the logo tile. Re-allocated only when
+	// the requested size changes, so a redraw at the same size is a flat
+	// DrawBitmap rather than a vector rasterise + RGBA allocation every
+	// time the window is invalidated.
+			BBitmap*			fCachedIcon;
+			float				fCachedIconSize;
 };
 
 
