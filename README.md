@@ -52,6 +52,17 @@ If Sotoportego saves you time, consider supporting development: [![Buy Me A Coff
 * **Mose-inspired GUI** — slate header banner with the HVIF brand tile
   and a state-coloured status dot, tabbed `Connection` / `Statistics`
   layout, About dialog with the same brand identity.
+* **VPNGate map browser** — a pan/zoom world map (offline coastline
+  fallback + OSM raster tiles via `TileCache`) plotting every public
+  VPNGate server as a clickable pin. The daemon-side `VPNGateFetcher`
+  pulls the catalogue from vpngate.net, base64-decodes each `.ovpn`
+  body and geocodes hosts to a country centroid; the GUI overlays a
+  "you are here" pin (from `ip-api.com`) and traces a connection arc
+  to the active server. The side panel shows host / country / log
+  policy and three colour-coded `MetricPill`s for ping / score /
+  sessions, so a usable server is one glance away. Click Connect and
+  the daemon stages the `.ovpn` under
+  `~/config/cache/Sotoportego/` and reuses the normal OpenVPN flow.
 * **Credentials prompt with optional remember** — modal
   `CredentialsWindow` before every Connect, with a "Remember password"
   checkbox; tick it once and the next Connect for that profile skips
@@ -150,6 +161,32 @@ left click on it shows your profile list, lets you connect with two
 clicks, and offers Disconnect / *Open Sotoportego…* / *Remove from
 Deskbar* below. The icon comes back automatically after a reboot.
 
+### Browse servers on a map
+
+**Tools → Browse servers on map** (or the same item from the Deskbar
+replicant) opens `VPNMapWindow`. The daemon fetches the VPNGate
+catalogue on first request and broadcasts it via `kMsgVPNGateList`;
+each entry becomes a yellow pin on the map, geocoded to its country
+centroid. A blue dot marks your current real-world location (resolved
+from your public IP via `ip-api.com`); during an active session a
+colored arc traces the tunnel from the blue dot to the chosen server.
+
+The toolbar above the map mirrors the **Map** menu (Zoom in / Zoom
+out / Fit to pins / Toggle tiles / Refresh catalogue). The side
+panel on the right shows the selected pin's host, country, log
+policy and three colour-coded badges:
+
+* **Ping** — green under 50 ms, amber under 150 ms, otherwise red.
+* **Score** — vpngate's bandwidth-ish metric; green above 100k,
+  amber above 30k.
+* **Sessions** — current users; green at 30 or fewer, amber up to
+  100, red beyond.
+
+Click **Connect** with a pin selected, fill in the credentials prompt
+(vpngate's public servers usually accept `vpn` / `vpn`), and the
+daemon stages the `.ovpn` body cached on the pin and feeds it through
+the same OpenVPN flow as a manually-imported profile.
+
 ### Daemon (manual)
 
 You can start the daemon by hand to watch its log — useful while
@@ -213,16 +250,21 @@ src/backend/   Backend seam: VPNBackend interface, real OpenVPNBackend
                (process + management socket + reader thread), and
                OpenVPNManagement (the management-interface parser)
 src/server/    The daemon (a BApplication / BLooper), ProfileStore
-               (persistent profiles), and GeoLookup (background HTTP
-               worker behind the connect notifications)
+               (persistent profiles), GeoLookup (background HTTP
+               worker behind the connect notifications and the map's
+               self pin), VPNGateFetcher (VPNGate catalogue
+               downloader) and CountryCentroids (country-name ->
+               centroid lat/lon table the catalogue geocoder uses)
 src/cli/       sotoportego_cli — the test client
-src/gui/       Sotoportego — the native GUI client (HeaderView,
-               MainWindow, CredentialsWindow, About, DeskbarIcon
-               replicant, brand HVIF). Map foundations live here
-               too: MapView (pan/zoom world map with server pins),
-               TileCache (OSM tile fetcher + on-disk cache), and
-               CoastlineData (offline coastline polylines for the
-               tiles-disabled mode).
+src/gui/       Sotoportego — the native GUI client. Main window
+               stack: HeaderView, MainWindow, CredentialsWindow,
+               About, DeskbarIcon replicant, brand HVIF. Map
+               browser stack: VPNMapWindow (toolbar + side panel),
+               MapView (pan/zoom world map with server pins +
+               self pin + connection arc), MetricPill (colour-
+               coded ping/score/sessions badges), TileCache (OSM
+               tile fetcher + on-disk cache) and CoastlineData
+               (offline coastlines for the tiles-disabled mode).
 scripts/       verify-tunnel.sh — shell check that the tunnel is
                up *and* actually carrying outbound traffic
 ```
@@ -269,13 +311,11 @@ scripts/       verify-tunnel.sh — shell check that the tunnel is
 
 ## Roadmap
 
-* **VPNGate map browser (in progress).** A pan/zoom world map that
-  plots every public VPNGate server as a clickable pin, with a
-  side-panel showing host / country / ping / score, and a Connect
-  button that fetches the `.ovpn` for the picked server on demand.
-  Foundations are landed (`MapView`, `TileCache`, `CoastlineData`);
-  the daemon-side CSV fetcher, the IP geocoding pass and
-  click-to-connect are tracked as separate work items.
+* **Pin clustering at low zoom.** The VPNGate catalogue is
+  Japan-heavy, so the world view stacks dozens of pins on top of one
+  another around Tokyo. Group nearby pins into a single cluster
+  marker with a count badge while the zoom level is below the city
+  threshold, expand into individual pins as the user zooms in.
 * WireGuard backend behind the same `VPNBackend` interface.
 * IPv6 routing fix-up.
 * Reconnect / backoff handling with a visible countdown.
