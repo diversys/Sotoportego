@@ -18,6 +18,7 @@ class BButton;
 class BStringView;
 class HeaderView;
 class MapView;
+class MetricPill;
 
 
 // Standalone window that hosts the world MapView and a side panel
@@ -60,9 +61,9 @@ private:
 
 			BStringView*		fHostValue;
 			BStringView*		fCountryValue;
-			BStringView*		fPingValue;
-			BStringView*		fScoreValue;
-			BStringView*		fSessionsValue;
+			MetricPill*			fPingValue;
+			MetricPill*			fScoreValue;
+			MetricPill*			fSessionsValue;
 			BStringView*		fLogPolicyValue;
 			BStringView*		fStatusBar;
 			BButton*			fConnectButton;

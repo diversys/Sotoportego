@@ -22,6 +22,7 @@
 #include "CredentialsWindow.h"
 #include "HeaderView.h"
 #include "MapView.h"
+#include "MetricPill.h"
 #include "VPNProtocol.h"
 
 
@@ -119,12 +120,11 @@ VPNMapWindow::_BuildLayout()
 	fHostValue->SetFont(be_bold_font);
 	fCountryValue = new BStringView("countryValue", "\xe2\x80\x94");
 	fCountryValue->SetFont(be_bold_font);
-	fPingValue = new BStringView("pingValue", "\xe2\x80\x94");
-	fPingValue->SetFont(be_bold_font);
-	fScoreValue = new BStringView("scoreValue", "\xe2\x80\x94");
-	fScoreValue->SetFont(be_bold_font);
-	fSessionsValue = new BStringView("sessionsValue", "\xe2\x80\x94");
-	fSessionsValue->SetFont(be_bold_font);
+	// Ping / score / sessions become colored pills so the user can pick a
+	// good server at a glance instead of mentally translating raw numbers.
+	fPingValue = new MetricPill("pingValue");
+	fScoreValue = new MetricPill("scoreValue");
+	fSessionsValue = new MetricPill("sessionsValue");
 	fLogPolicyValue = new BStringView("logPolicyValue", "\xe2\x80\x94");
 	fLogPolicyValue->SetFont(be_bold_font);
 
@@ -391,9 +391,12 @@ VPNMapWindow::_RefreshSidePanel()
 		const char* dash = "\xe2\x80\x94";
 		if (fHostValue != NULL)		fHostValue->SetText(dash);
 		if (fCountryValue != NULL)	fCountryValue->SetText(dash);
-		if (fPingValue != NULL)		fPingValue->SetText(dash);
-		if (fScoreValue != NULL)	fScoreValue->SetText(dash);
-		if (fSessionsValue != NULL)	fSessionsValue->SetText(dash);
+		if (fPingValue != NULL)
+			fPingValue->SetMetric("", MetricPill::kTierUnknown);
+		if (fScoreValue != NULL)
+			fScoreValue->SetMetric("", MetricPill::kTierUnknown);
+		if (fSessionsValue != NULL)
+			fSessionsValue->SetMetric("", MetricPill::kTierUnknown);
 		if (fLogPolicyValue != NULL) fLogPolicyValue->SetText(dash);
 		if (fConnectButton != NULL)	fConnectButton->SetEnabled(false);
 		return;
@@ -415,15 +418,16 @@ VPNMapWindow::_RefreshSidePanel()
 	char buf[64];
 	if (fPingValue != NULL) {
 		snprintf(buf, sizeof(buf), "%" B_PRId32 " ms", picked->pingMs);
-		fPingValue->SetText(buf);
+		fPingValue->SetMetric(buf, MetricPill::TierForPing(picked->pingMs));
 	}
 	if (fScoreValue != NULL) {
 		snprintf(buf, sizeof(buf), "%" B_PRId32, picked->score);
-		fScoreValue->SetText(buf);
+		fScoreValue->SetMetric(buf, MetricPill::TierForScore(picked->score));
 	}
 	if (fSessionsValue != NULL) {
 		snprintf(buf, sizeof(buf), "%" B_PRId32, picked->sessions);
-		fSessionsValue->SetText(buf);
+		fSessionsValue->SetMetric(buf,
+			MetricPill::TierForSessions(picked->sessions));
 	}
 	if (fLogPolicyValue != NULL) {
 		fLogPolicyValue->SetText(picked->logPolicy.Length() > 0
