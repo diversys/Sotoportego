@@ -157,9 +157,36 @@ VPNMapWindow::_BuildLayout()
 	small.SetSize(small.Size() * 0.9f);
 	fStatusBar->SetFont(&small);
 
+	// --- toolbar --------------------------------------------------------
+	// Mirrors the Map menu so the common gestures (zoom, fit, toggle
+	// tiles, reload) are reachable without pulling the menu down. Labels
+	// use the same Unicode symbols the system file/zoom dialogs use, so
+	// they read at a glance without dragging a per-icon HVIF into the
+	// build.
+	BButton* zoomInButton = new BButton("tbZoomIn", "+",
+		new BMessage(kMsgZoomIn));
+	BButton* zoomOutButton = new BButton("tbZoomOut", "\xe2\x88\x92",
+		new BMessage(kMsgZoomOut));
+	BButton* fitButton = new BButton("tbFit", "Fit",
+		new BMessage(kMsgZoomFit));
+	BButton* tilesButton = new BButton("tbTiles", "Tiles",
+		new BMessage(kMsgToggleTiles));
+	BButton* refreshButton = new BButton("tbRefresh", "Refresh",
+		new BMessage(kMsgRefresh));
+
 	BLayoutBuilder::Group<>(this, B_VERTICAL, 0)
 		.Add(menuBar)
 		.Add(fHeader)
+		.AddGroup(B_HORIZONTAL, B_USE_SMALL_SPACING)
+			.SetInsets(B_USE_WINDOW_INSETS, B_USE_HALF_ITEM_SPACING,
+				B_USE_WINDOW_INSETS, B_USE_HALF_ITEM_SPACING)
+			.Add(zoomInButton)
+			.Add(zoomOutButton)
+			.Add(fitButton)
+			.Add(tilesButton)
+			.AddGlue()
+			.Add(refreshButton)
+		.End()
 		.AddGroup(B_HORIZONTAL, B_USE_DEFAULT_SPACING)
 			.SetInsets(B_USE_WINDOW_INSETS, B_USE_HALF_ITEM_SPACING,
 				B_USE_WINDOW_INSETS, B_USE_HALF_ITEM_SPACING)
