@@ -12,11 +12,8 @@
 
 #include <map>
 
-#include "VPNState.h"
-
 class BButton;
 class BStringView;
-class HeaderView;
 class MapView;
 class MetricPill;
 
@@ -46,7 +43,6 @@ public:
 private:
 			void				_BuildLayout();
 			void				_RefreshSidePanel();
-			void				_RefreshHeader();
 
 	// Daemon plumbing.
 			void				_EnsureDaemon();
@@ -56,7 +52,6 @@ private:
 			void				_SendConnectWith(const char* user,
 									const char* pass);
 
-			HeaderView*			fHeader;
 			MapView*			fMap;
 
 			BStringView*		fHostValue;
@@ -67,13 +62,6 @@ private:
 			BStringView*		fLogPolicyValue;
 			BStringView*		fStatusBar;
 			BButton*			fConnectButton;
-
-	// Tracked from kMsgStatusUpdate so the header can show the live
-	// state and the connected server if any.
-			VPNState			fState;
-			BString				fConnectedHost;
-			BString				fHomeCountry;
-			int32				fServerCount;
 
 	// Messenger we use to talk to the daemon. Lazily resolved on first use
 	// so we don't block opening the window when the server is slow.
