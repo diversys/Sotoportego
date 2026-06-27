@@ -18,6 +18,7 @@
 class BButton;
 class BFilePanel;
 class BListView;
+class BMessageRunner;
 class BStringView;
 class HeaderView;
 
@@ -49,6 +50,11 @@ private:
 									const char* detail);
 			void				_ApplyStats(const BMessage* message);
 			void				_AppendEvent(const char* text);
+	// Rebuild the bottom status-bar line. Called from _UpdateForState
+	// and from the 1 Hz uptime tick.
+			void				_RefreshStatusBar();
+			void				_StartUptimeTimer();
+			void				_StopUptimeTimer();
 
 	// Profile management.
 			void				_ApplyProfileList(const BMessage* message);
@@ -97,6 +103,14 @@ private:
 			BButton*			fRemoveButton;
 			BButton*			fActionButton;
 			BStringView*		fStatusBar;
+
+	// When the daemon reports CONNECTED we start ticking the status bar
+	// once a second so the user sees the session uptime grow ("Connected
+	// · 00:12:34"). fConnectedSince is the wall-clock epoch the daemon
+	// captured on CONNECTED; fUptimeTimer is a 1 Hz BMessageRunner that
+	// posts kMsgUptimeTick to us, alive only while the state is live.
+			time_t				fConnectedSince;
+			BMessageRunner*		fUptimeTimer;
 
 			BFilePanel*			fImportPanel;
 			std::vector<VPNProfile>	fProfiles;

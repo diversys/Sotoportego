@@ -14,6 +14,7 @@
 #include <Entry.h>
 #include <FilePanel.h>
 #include <Font.h>
+#include <MessageRunner.h>
 #include <GroupLayout.h>
 #include <Key.h>
 #include <KeyStore.h>
@@ -58,6 +59,7 @@ static const uint32 kMsgForgetPassword		= 'gFor';
 static const uint32 kMsgInstallDeskbar		= 'gDIn';
 static const uint32 kMsgRemoveDeskbar		= 'gDRm';
 static const uint32 kMsgBrowseOnMap			= 'gMap';
+static const uint32 kMsgUptimeTick			= 'gUpT';
 
 static const char* const kBackendName	= "OpenVPN";
 
@@ -91,6 +93,8 @@ MainWindow::MainWindow()
 	fRemoveButton(NULL),
 	fActionButton(NULL),
 	fStatusBar(NULL),
+	fConnectedSince(0),
+	fUptimeTimer(NULL),
 	fImportPanel(NULL),
 	fProfiles(),
 	fSelectedName(),
@@ -107,6 +111,7 @@ MainWindow::MainWindow()
 
 MainWindow::~MainWindow()
 {
+	_StopUptimeTimer();
 	delete fImportPanel;
 }
 
@@ -464,6 +469,13 @@ MainWindow::MessageReceived(BMessage* message)
 			_ApplyStats(message);
 			break;
 
+		case kMsgUptimeTick:
+			// Cheap once-a-second refresh while the tunnel is up. The
+			// state hasn't changed so the only field that visibly moves
+			// is the elapsed-time suffix on the status bar.
+			_RefreshStatusBar();
+			break;
+
 		default:
 			BWindow::MessageReceived(message);
 			break;
@@ -632,17 +644,14 @@ MainWindow::_UpdateForState(VPNState state, const char* detail)
 		fActionButton->SetEnabled(canConnect);
 	}
 
-	if (fStatusBar != NULL) {
-		BString status;
-		status << (int32)fProfiles.size();
-		status << (fProfiles.size() == 1 ? " profile \xc2\xb7 " : " profiles \xc2\xb7 ");
-		status << vpn_state_name(state);
-		if (state == VPN_STATE_CONNECTED && fCountry.Length() > 0) {
-			status << " \xc2\xb7 ";
-			status << fCountry;
-		}
-		fStatusBar->SetText(status.String());
-	}
+	_RefreshStatusBar();
+
+	// Drive the 1 Hz uptime tick only while the session is actually up:
+	// any other state means there is no elapsed time to display.
+	if (state == VPN_STATE_CONNECTED)
+		_StartUptimeTimer();
+	else
+		_StopUptimeTimer();
 
 	if (previous != state) {
 		BString line(vpn_state_name(state));
@@ -698,6 +707,14 @@ MainWindow::_ApplyStats(const BMessage* message)
 		fDownValue->SetText(_FormatBytes(stats.fBytesIn).String());
 	if (fUpValue != NULL)
 		fUpValue->SetText(_FormatBytes(stats.fBytesOut).String());
+
+	// Cache the epoch the daemon recorded on CONNECTED so the status-bar
+	// uptime tick has something to count from. _RefreshStatusBar picks
+	// it up; this assignment is also what makes the very first
+	// CONNECTED tick show 00:00:00 instead of a stale value from a
+	// previous session.
+	if (stats.fConnectedSince > 0)
+		fConnectedSince = stats.fConnectedSince;
 
 	if (fSinceValue != NULL) {
 		if (stats.fConnectedSince > 0) {
@@ -1072,6 +1089,70 @@ MainWindow::_RemoveDeskbarIcon()
 	if (!DeskbarIcon::IsInDeskbar())
 		return;
 	DeskbarIcon::RemoveFromDeskbar();
+}
+
+
+void
+MainWindow::_RefreshStatusBar()
+{
+	if (fStatusBar == NULL)
+		return;
+	BString status;
+	status << (int32)fProfiles.size();
+	status << (fProfiles.size() == 1 ? " profile \xc2\xb7 " : " profiles \xc2\xb7 ");
+	status << vpn_state_name(fState);
+	if (fState == VPN_STATE_CONNECTED) {
+		if (fConnectedSince > 0) {
+			time_t now = time(NULL);
+			long elapsed = (long)(now - fConnectedSince);
+			if (elapsed < 0)
+				elapsed = 0;
+			long hours = elapsed / 3600;
+			long minutes = (elapsed % 3600) / 60;
+			long seconds = elapsed % 60;
+			char buf[32];
+			if (hours > 0) {
+				snprintf(buf, sizeof(buf), "%ld:%02ld:%02ld",
+					hours, minutes, seconds);
+			} else {
+				snprintf(buf, sizeof(buf), "%02ld:%02ld",
+					minutes, seconds);
+			}
+			status << " \xc2\xb7 ";
+			status << buf;
+		}
+		if (fCountry.Length() > 0) {
+			status << " \xc2\xb7 ";
+			status << fCountry;
+		}
+	}
+	fStatusBar->SetText(status.String());
+}
+
+
+void
+MainWindow::_StartUptimeTimer()
+{
+	if (fUptimeTimer != NULL)
+		return;
+	BMessage tick(kMsgUptimeTick);
+	fUptimeTimer = new BMessageRunner(BMessenger(this), &tick, 1000000);
+	if (fUptimeTimer->InitCheck() != B_OK) {
+		delete fUptimeTimer;
+		fUptimeTimer = NULL;
+	}
+}
+
+
+void
+MainWindow::_StopUptimeTimer()
+{
+	delete fUptimeTimer;
+	fUptimeTimer = NULL;
+	// Drop the cached epoch so a future CONNECTED really shows 00:00
+	// instead of inheriting the previous session's start time before
+	// the first stats broadcast arrives.
+	fConnectedSince = 0;
 }
 
 
