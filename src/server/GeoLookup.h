@@ -19,13 +19,16 @@
 // come from on the underlying carrier.
 //
 // On completion the worker sends `target` a BMessage with what == `what`,
-// carrying a single `kFieldCountry` string. On failure the same message is
-// sent without that field, so the caller can always rely on a final
-// notification.
+// carrying `kFieldCountry` and `kFieldQueryIP` strings. On failure either
+// (or both) field may be missing, so the caller can always rely on a final
+// notification arriving.
 namespace GeoLookup {
 
-// BMessage field carrying the country name in the result message.
+// BMessage fields in the result message.
 extern const char* const kFieldCountry;
+// The public IP ip-api saw the request from -- i.e. the egress IP of the
+// VPN tunnel once routing is up.
+extern const char* const kFieldQueryIP;
 
 // Fire-and-forget. Returns immediately; the message arrives on the target's
 // looper thread.

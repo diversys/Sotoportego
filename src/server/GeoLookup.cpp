@@ -4,6 +4,7 @@
  */
 #include "GeoLookup.h"
 
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <stdio.h>
@@ -20,13 +21,15 @@
 namespace GeoLookup {
 
 const char* const kFieldCountry = "soto:geo:country";
+const char* const kFieldQueryIP = "soto:geo:queryIP";
 
 // ip-api.com supports a plain-text "line" format keyed by the fields you
-// request, so we ask for just `country` and parse the body as a one-line
-// string. This avoids dragging a JSON parser into the daemon.
+// request, so we ask for `country` and `query` and parse the response as
+// two newline-separated values in the order we requested them. This avoids
+// dragging a JSON parser into the daemon.
 static const char* const kHost		= "ip-api.com";
 static const int kPort				= 80;
-static const char* const kPath		= "/line?fields=country";
+static const char* const kPath		= "/line?fields=country,query";
 
 // Total wall-clock budget for the request -- connect, write, read. If the
 // VPN's egress blocks port 80 or ip-api throttles us, we'd rather time out
@@ -66,6 +69,10 @@ http_get(const char* host, int port, const char* path)
 	int sock = socket(AF_INET, SOCK_STREAM, 0);
 	if (sock < 0)
 		return BString();
+
+	// Don't leak this short-lived socket into any openvpn child the
+	// backend may spawn while we are mid-lookup.
+	fcntl(sock, F_SETFD, FD_CLOEXEC);
 
 	set_socket_timeout(sock, GeoLookup::kTimeoutSeconds);
 
@@ -131,12 +138,33 @@ lookup_thread(void* arg)
 {
 	LookupArgs* args = (LookupArgs*)arg;
 
-	BString country = http_get(GeoLookup::kHost, GeoLookup::kPort,
+	BString body = http_get(GeoLookup::kHost, GeoLookup::kPort,
 		GeoLookup::kPath);
+
+	// `?fields=country,query` returns two lines in the request order:
+	//   Italy
+	//   1.2.3.4
+	// If the body has only one line we treat it as the country (the older
+	// single-field response), so dropping the IP isn't a hard error.
+	BString country;
+	BString queryIP;
+	if (body.Length() > 0) {
+		int32 newline = body.FindFirst('\n');
+		if (newline < 0) {
+			country = body;
+		} else {
+			body.CopyInto(country, 0, newline);
+			body.CopyInto(queryIP, newline + 1, body.Length() - newline - 1);
+		}
+		country.Trim();
+		queryIP.Trim();
+	}
 
 	BMessage result(args->what);
 	if (country.Length() > 0)
 		result.AddString(GeoLookup::kFieldCountry, country);
+	if (queryIP.Length() > 0)
+		result.AddString(GeoLookup::kFieldQueryIP, queryIP);
 	args->target.SendMessage(&result);
 
 	delete args;

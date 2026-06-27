@@ -87,6 +87,7 @@ private:
 			BStringView*		fBackendLabel;
 			BStringView*		fProtocolLabel;
 			BStringView*		fTunnelIPValue;
+			BStringView*		fExternalIPValue;
 			BStringView*		fSinceValue;
 			BStringView*		fDownValue;
 			BStringView*		fUpValue;

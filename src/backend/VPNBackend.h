@@ -55,6 +55,11 @@ public:
 	virtual	void				SetCredentials(const BString& /*user*/,
 									const BString& /*pass*/) {}
 
+	// Called once at daemon startup. Backends that touch routing or other
+	// system state during a session can override this to roll back any
+	// mess left over by a previous crashed run. Default is a no-op.
+	virtual	void				RecoverIfCrashed() {}
+
 	// A short, stable identifier for this backend ("OpenVPN", ...). Distinct
 	// from BHandler::Name().
 	virtual	const char*			BackendName() const = 0;

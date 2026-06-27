@@ -81,6 +81,7 @@ MainWindow::MainWindow()
 	fBackendLabel(NULL),
 	fProtocolLabel(NULL),
 	fTunnelIPValue(NULL),
+	fExternalIPValue(NULL),
 	fSinceValue(NULL),
 	fDownValue(NULL),
 	fUpValue(NULL),
@@ -220,6 +221,8 @@ MainWindow::_BuildConnectionTab()
 	fProtocolLabel->SetFont(be_bold_font);
 	fTunnelIPValue = new BStringView("tunnelIPValue", "\xe2\x80\x94");
 	fTunnelIPValue->SetFont(be_bold_font);
+	fExternalIPValue = new BStringView("externalIPValue", "\xe2\x80\x94");
+	fExternalIPValue->SetFont(be_bold_font);
 
 	BLayoutBuilder::Grid<>(detailsBox, B_USE_DEFAULT_SPACING,
 			B_USE_SMALL_SPACING)
@@ -232,7 +235,9 @@ MainWindow::_BuildConnectionTab()
 		.Add(new BStringView("protocolCaption", "Protocol:"), 0, 2)
 		.Add(fProtocolLabel, 1, 2)
 		.Add(new BStringView("tunnelIPCaption", "Tunnel IP:"), 0, 3)
-		.Add(fTunnelIPValue, 1, 3);
+		.Add(fTunnelIPValue, 1, 3)
+		.Add(new BStringView("externalIPCaption", "External IP:"), 0, 4)
+		.Add(fExternalIPValue, 1, 4);
 
 	fActionButton = new BButton("actionButton", "Connect",
 		new BMessage(kMsgPrimaryAction));
@@ -425,6 +430,19 @@ MainWindow::MessageReceived(BMessage* message)
 			} else if (fTunnelIPValue != NULL
 					&& (VPNState)state == VPN_STATE_DISCONNECTED) {
 				fTunnelIPValue->SetText("\xe2\x80\x94");
+			}
+			// External (public) IP arrives later, after the geo-lookup
+			// finishes -- it's the IP the outside world sees, not the
+			// in-tunnel address above. Clear it back to dash on
+			// disconnect so a previous session's value doesn't linger.
+			const char* externalIP = NULL;
+			if (message->FindString(kFieldExternalIP, &externalIP) == B_OK
+					&& externalIP != NULL && fExternalIPValue != NULL) {
+				fExternalIPValue->SetText(externalIP[0] != '\0'
+					? externalIP : "\xe2\x80\x94");
+			} else if (fExternalIPValue != NULL
+					&& (VPNState)state == VPN_STATE_DISCONNECTED) {
+				fExternalIPValue->SetText("\xe2\x80\x94");
 			}
 			// Country either arrives in this update (the daemon broadcasts
 			// it after the geo-lookup finishes) or gets cleared when the

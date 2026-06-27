@@ -8,11 +8,14 @@
 
 #include <sys/types.h>
 
+#include <Locker.h>
 #include <OS.h>
 #include <String.h>
 
 #include "OpenVPNManagement.h"
 #include "VPNBackend.h"
+
+class BPath;
 
 
 // Real OpenVPN backend.
@@ -45,7 +48,29 @@ public:
 
 	virtual	void				MessageReceived(BMessage* message);
 
+	// Called once during daemon startup, before any Connect(). If the
+	// previous run left a session file behind (i.e. daemon or openvpn
+	// died with the default route still pointing at a dead tun), tear
+	// the broken state down so the user has working internet again. Safe
+	// to call when no crash happened: it's a no-op without a session file.
+			void				RecoverIfCrashed();
+
 private:
+	// --- session file for crash recovery -------------------------------
+	// Path: $B_USER_SETTINGS_DIRECTORY/Sotoportego/session
+	// Written from _InstallRoutes(); removed from _RemoveRoutes(). The
+	// flattened BMessage carries everything _ApplyRestore needs to undo
+	// the install, plus the openvpn pid so RecoverIfCrashed() can tell
+	// whether the previous run is really dead.
+			bool				_WriteSessionFile() const;
+			void				_RemoveSessionFile() const;
+	static	status_t			_SessionPath(BPath* path);
+			void				_ApplyRestore(const BString& tunIface,
+									const BString& tunPeer,
+									const BString& origGateway,
+									const BString& origGatewayIface,
+									const BString& serverIP);
+
 	// --- lifecycle -----------------------------------------------------
 			bool				_SpawnOpenVPN(const VPNProfile& profile);
 			bool				_ConnectManagementSocket();
@@ -96,6 +121,10 @@ private:
 	// `fOrigGatewayIface` is the path the kernel's route command wants
 	// (e.g. "/dev/net/iprowifi4965/0"); `fTunPeer` is the in-tunnel peer
 	// IP that the pushed default route should target.
+	// All three are written from the stderr-reader thread (via
+	// _ScanLogLine) and read from the looper thread on CONNECTED, so they
+	// live behind fScanLock to keep the two in sync.
+			BLocker				fScanLock;
 			BString				fOrigGateway;
 			BString				fOrigGatewayIface;
 			BString				fTunPeer;
