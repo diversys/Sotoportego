@@ -525,6 +525,19 @@ SotoportegoServer::_HandleStatusForNotification(BMessage* message)
 	VPNState newState = (VPNState)stateValue;
 	VPNState previous = fLastState;
 	fLastState = newState;
+
+	// Whenever the daemon ends up in a non-live state, drop the
+	// connected-host record unconditionally. The notification logic
+	// below still gates on the transition (so we don't post duplicate
+	// "VPN disconnected" balloons), but the broadcast field has to be
+	// cleared even when DISCONNECTED -> DISCONNECTED is just a status
+	// echo, otherwise the map keeps drawing the arc to the previous pin
+	// after the catalogue arrives.
+	if (newState == VPN_STATE_DISCONNECTED || newState == VPN_STATE_ERROR) {
+		fConnectedHost = "";
+		fLastServerSummary = "";
+	}
+
 	if (newState == previous)
 		return;
 

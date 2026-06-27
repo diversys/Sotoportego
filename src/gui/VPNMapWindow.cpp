@@ -23,6 +23,7 @@
 #include "MapView.h"
 #include "MetricPill.h"
 #include "VPNProtocol.h"
+#include "VPNState.h"
 
 
 // --- toolbar / private message codes ---------------------------------------
@@ -481,12 +482,22 @@ VPNMapWindow::MessageReceived(BMessage* message)
 				fMap->SetSelfPosition(lat, lon,
 					country != NULL ? country : "You are here");
 			}
-			// Connected pin: empty string means "no active session"; the
-			// MapView treats unknown hosts as "no arc", so this works
-			// whether the catalogue has loaded yet or not.
+			// Connection arc: gate on the actual VPN state, not just the
+			// presence of kFieldConnectedHost. The daemon clears the host
+			// on disconnect, but defending in the GUI keeps the arc from
+			// ever pointing at a previous session if a status broadcast
+			// somewhere up the chain forgets to drop the field.
+			int32 stateValue = (int32)VPN_STATE_DISCONNECTED;
+			message->FindInt32(kFieldState, &stateValue);
+			VPNState state = (VPNState)stateValue;
+			bool isLive = state != VPN_STATE_DISCONNECTED
+				&& state != VPN_STATE_ERROR;
+
 			const char* connectedHost = NULL;
-			if (message->FindString(kFieldConnectedHost, &connectedHost)
-					== B_OK && connectedHost != NULL) {
+			if (isLive
+					&& message->FindString(kFieldConnectedHost,
+						&connectedHost) == B_OK
+					&& connectedHost != NULL && connectedHost[0] != '\0') {
 				fMap->SetActiveHost(BString(connectedHost));
 			} else {
 				fMap->SetActiveHost(BString(""));
