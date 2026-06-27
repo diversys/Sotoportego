@@ -29,6 +29,11 @@ extern const char* const kFieldCountry;
 // The public IP ip-api saw the request from -- i.e. the egress IP of the
 // VPN tunnel once routing is up.
 extern const char* const kFieldQueryIP;
+// Geo coordinates of that IP. Float fields; only present when the lookup
+// succeeded AND ip-api had location data for the IP (some VPN exit ASNs
+// come back without a precise lat/lon).
+extern const char* const kFieldLatitude;
+extern const char* const kFieldLongitude;
 
 // Fire-and-forget. Returns immediately; the message arrives on the target's
 // looper thread.

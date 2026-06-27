@@ -29,7 +29,10 @@
 
 // Internal 'what' for the geo-lookup result. Stays in this translation unit
 // because no client should ever see it.
-static const uint32 kMsgCountryResult = 'sCty';
+static const uint32 kMsgCountryResult	= 'sCty';
+// Same idea but for the "home" geo lookup, fired off when no VPN is up so
+// the map knows where to plant the "you are here" pin.
+static const uint32 kMsgHomeGeoResult	= 'sHom';
 
 // Internal 'what' fired by VPNGateFetcher once the catalogue is in (or once
 // the fetch has failed). Carries the same payload as kMsgVPNGateList; we
@@ -54,6 +57,12 @@ SotoportegoServer::SotoportegoServer()
 	fProfiles(),
 	fLastState(VPN_STATE_DISCONNECTED),
 	fLastServerSummary(),
+	fConnectedHost(),
+	fHomeCountry(),
+	fHomeIP(),
+	fHomeLat(0.0f),
+	fHomeLon(0.0f),
+	fHomeLookupInFlight(false),
 	fCatalogueCache(),
 	fCatalogueFetchedAt(0),
 	fCatalogueFetchInFlight(false),
@@ -87,6 +96,11 @@ SotoportegoServer::ReadyToRun()
 	// right now. Roll the routes back to whatever the session file recorded
 	// so they're online again before they have to look up what we did.
 	fBackend->RecoverIfCrashed();
+
+	// Kick off the first "where are we without a VPN?" lookup. The answer
+	// lands later as kMsgHomeGeoResult and is folded into every subsequent
+	// status broadcast so the map can plant a "you are here" pin.
+	_KickHomeGeoLookup();
 
 	printf("[server] Sotoportego daemon ready (%s)\n", kServerSignature);
 }
@@ -143,6 +157,9 @@ SotoportegoServer::MessageReceived(BMessage* message)
 		// --- Internal: country lookup result ---------------------------
 		case kMsgCountryResult:
 			_HandleCountryResult(message);
+			break;
+		case kMsgHomeGeoResult:
+			_HandleHomeGeoResult(message);
 			break;
 
 		default:
@@ -309,6 +326,82 @@ SotoportegoServer::_FillStatus(BMessage* message)
 	BString remoteIP = fBackend->RemoteIP();
 	if (remoteIP.Length() > 0)
 		message->AddString(kFieldRemoteIP, remoteIP);
+
+	// Home geo (constant across status updates; cheap to fold in so a fresh
+	// subscriber doesn't have to wait for the next disconnect to learn it).
+	if (fHomeCountry.Length() > 0)
+		message->AddString(kFieldHomeCountry, fHomeCountry);
+	if (fHomeIP.Length() > 0)
+		message->AddString(kFieldHomeIP, fHomeIP);
+	if (fHomeLat != 0.0f || fHomeLon != 0.0f) {
+		message->AddFloat(kFieldHomeLat, fHomeLat);
+		message->AddFloat(kFieldHomeLon, fHomeLon);
+	}
+
+	// vpngate host the user is currently aimed at, if any. The map uses
+	// this to draw the connection arc to the right pin.
+	if (fConnectedHost.Length() > 0)
+		message->AddString(kFieldConnectedHost, fConnectedHost);
+}
+
+
+void
+SotoportegoServer::_KickHomeGeoLookup()
+{
+	if (fHomeLookupInFlight)
+		return;
+	// Only resolve the home location when we are not currently routing
+	// through a VPN -- otherwise ip-api answers with the VPN exit address
+	// and we'd remember that as "home".
+	if (fBackend != NULL && fBackend->State() != VPN_STATE_DISCONNECTED
+			&& fBackend->State() != VPN_STATE_ERROR) {
+		return;
+	}
+	fHomeLookupInFlight = true;
+	GeoLookup::BackgroundLookup(BMessenger(this), kMsgHomeGeoResult);
+}
+
+
+void
+SotoportegoServer::_HandleHomeGeoResult(BMessage* message)
+{
+	fHomeLookupInFlight = false;
+
+	const char* country = NULL;
+	const char* ip = NULL;
+	float lat = 0.0f;
+	float lon = 0.0f;
+	message->FindString(GeoLookup::kFieldCountry, &country);
+	message->FindString(GeoLookup::kFieldQueryIP, &ip);
+	message->FindFloat(GeoLookup::kFieldLatitude, &lat);
+	message->FindFloat(GeoLookup::kFieldLongitude, &lon);
+
+	bool changed = false;
+	if (country != NULL && fHomeCountry != country) {
+		fHomeCountry = country;
+		changed = true;
+	}
+	if (ip != NULL && fHomeIP != ip) {
+		fHomeIP = ip;
+		changed = true;
+	}
+	if (lat != 0.0f && lon != 0.0f
+			&& (lat != fHomeLat || lon != fHomeLon)) {
+		fHomeLat = lat;
+		fHomeLon = lon;
+		changed = true;
+	}
+
+	if (!changed)
+		return;
+
+	printf("[server] home geo: %s / %s / %.3f, %.3f\n",
+		fHomeCountry.String(), fHomeIP.String(), fHomeLat, fHomeLon);
+
+	// Refresh every subscriber so the map can update its self pin.
+	BMessage update(kMsgStatusUpdate);
+	_FillStatus(&update);
+	_Broadcast(&update);
 }
 
 
@@ -440,6 +533,10 @@ SotoportegoServer::_HandleStatusForNotification(BMessage* message)
 			_PostNotification("Sotoportego", "VPN disconnected.",
 				B_INFORMATION_NOTIFICATION);
 			fLastServerSummary = "";
+			fConnectedHost = "";
+			// Routing is back on the carrier; refresh "home" so the map
+			// reflects the user's actual position if they moved networks.
+			_KickHomeGeoLookup();
 			break;
 		}
 
@@ -457,6 +554,8 @@ SotoportegoServer::_HandleStatusForNotification(BMessage* message)
 			_PostNotification("Sotoportego", content.String(),
 				B_ERROR_NOTIFICATION);
 			fLastServerSummary = "";
+			fConnectedHost = "";
+			_KickHomeGeoLookup();
 			break;
 		}
 
@@ -713,6 +812,11 @@ SotoportegoServer::_HandleConnectVPNGate(BMessage* message)
 		return;
 	}
 	message->FindString(kFieldVPNGateCountryLong, &ccLong);
+
+	// Record the host now so the next status broadcast (and the geo
+	// result that lands later) can carry it. Cleared by the disconnect
+	// path below.
+	fConnectedHost = host;
 
 	BString configPath = _WriteVPNGateConfig(host, base64);
 	if (configPath.Length() == 0) {

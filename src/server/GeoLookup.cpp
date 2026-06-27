@@ -8,6 +8,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -20,16 +21,18 @@
 
 namespace GeoLookup {
 
-const char* const kFieldCountry = "soto:geo:country";
-const char* const kFieldQueryIP = "soto:geo:queryIP";
+const char* const kFieldCountry		= "soto:geo:country";
+const char* const kFieldQueryIP		= "soto:geo:queryIP";
+const char* const kFieldLatitude	= "soto:geo:lat";
+const char* const kFieldLongitude	= "soto:geo:lon";
 
 // ip-api.com supports a plain-text "line" format keyed by the fields you
-// request, so we ask for `country` and `query` and parse the response as
-// two newline-separated values in the order we requested them. This avoids
-// dragging a JSON parser into the daemon.
+// request, so we ask for `country`, `query`, `lat`, `lon` and parse the
+// response as four newline-separated values in the order we requested. This
+// avoids dragging a JSON parser into the daemon.
 static const char* const kHost		= "ip-api.com";
 static const int kPort				= 80;
-static const char* const kPath		= "/line?fields=country,query";
+static const char* const kPath		= "/line?fields=country,query,lat,lon";
 
 // Total wall-clock budget for the request -- connect, write, read. If the
 // VPN's egress blocks port 80 or ip-api throttles us, we'd rather time out
@@ -141,30 +144,45 @@ lookup_thread(void* arg)
 	BString body = http_get(GeoLookup::kHost, GeoLookup::kPort,
 		GeoLookup::kPath);
 
-	// `?fields=country,query` returns two lines in the request order:
-	//   Italy
-	//   1.2.3.4
-	// If the body has only one line we treat it as the country (the older
-	// single-field response), so dropping the IP isn't a hard error.
-	BString country;
-	BString queryIP;
+	// `?fields=country,query,lat,lon` returns four lines in the request
+	// order. Older responses may have only one or two lines; treat any
+	// missing line as "no value" rather than a hard error.
+	BString lines[4];
+	int lineCount = 0;
 	if (body.Length() > 0) {
-		int32 newline = body.FindFirst('\n');
-		if (newline < 0) {
-			country = body;
-		} else {
-			body.CopyInto(country, 0, newline);
-			body.CopyInto(queryIP, newline + 1, body.Length() - newline - 1);
+		int32 from = 0;
+		for (int i = 0; i < 4; i++) {
+			int32 nl = body.FindFirst('\n', from);
+			if (nl < 0) {
+				body.CopyInto(lines[i], from, body.Length() - from);
+				lines[i].Trim();
+				lineCount = i + 1;
+				break;
+			}
+			body.CopyInto(lines[i], from, nl - from);
+			lines[i].Trim();
+			from = nl + 1;
+			lineCount = i + 1;
 		}
-		country.Trim();
-		queryIP.Trim();
 	}
 
 	BMessage result(args->what);
-	if (country.Length() > 0)
-		result.AddString(GeoLookup::kFieldCountry, country);
-	if (queryIP.Length() > 0)
-		result.AddString(GeoLookup::kFieldQueryIP, queryIP);
+	if (lineCount >= 1 && lines[0].Length() > 0)
+		result.AddString(GeoLookup::kFieldCountry, lines[0]);
+	if (lineCount >= 2 && lines[1].Length() > 0)
+		result.AddString(GeoLookup::kFieldQueryIP, lines[1]);
+	if (lineCount >= 3 && lines[2].Length() > 0) {
+		float lat = (float)atof(lines[2].String());
+		// ip-api sends "0" for unknown locations; treat exact-zero as missing
+		// so we don't claim Null Island as anyone's home.
+		if (lat != 0.0f)
+			result.AddFloat(GeoLookup::kFieldLatitude, lat);
+	}
+	if (lineCount >= 4 && lines[3].Length() > 0) {
+		float lon = (float)atof(lines[3].String());
+		if (lon != 0.0f)
+			result.AddFloat(GeoLookup::kFieldLongitude, lon);
+	}
 	args->target.SendMessage(&result);
 
 	delete args;

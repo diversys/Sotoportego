@@ -159,6 +159,11 @@ MapView::Draw(BRect /*updateRect*/)
 	// 6. Server pins.
 	_DrawPins();
 
+	// 6b. Curved arc between self and the active VPN endpoint, if any.
+	// Drawn after pins so the arc passes over them, but before _DrawSelf
+	// so the "you are here" ring stays the brightest mark on the map.
+	_DrawConnectionArc();
+
 	// 7. "You are here" marker if set.
 	if (fHasSelfPosition)
 		_DrawSelf();
@@ -339,13 +344,20 @@ MapView::MessageReceived(BMessage* message)
 void
 MapView::SetSelfPosition(float lat, float lon, const char* label)
 {
+	bool firstTime = !fHasSelfPosition;
+
 	fSelfLat = lat;
 	fSelfLon = lon;
 	fSelfLabel = (label != NULL ? label : "");
 	fHasSelfPosition = true;
 
-	fCenterLat = lat;
-	fCenterLon = lon;
+	// Only auto-recenter on the *first* time we learn where we are; later
+	// updates (the daemon re-broadcasts on every status change) must not
+	// snap the camera away from wherever the user panned to.
+	if (firstTime) {
+		fCenterLat = lat;
+		fCenterLon = lon;
+	}
 
 	Invalidate();
 }
@@ -357,6 +369,30 @@ MapView::ClearSelf()
 	fHasSelfPosition = false;
 	fSelfLabel = "";
 	Invalidate();
+}
+
+
+void
+MapView::SetActiveHost(const BString& host)
+{
+	if (fActiveHost == host)
+		return;
+	fActiveHost = host;
+	Invalidate();
+}
+
+
+const ServerPin*
+MapView::_FindPinByHost(const BString& host) const
+{
+	if (host.Length() == 0)
+		return NULL;
+	for (int32 i = 0; i < fPins.CountItems(); i++) {
+		const ServerPin* pin = fPins.ItemAt(i);
+		if (pin->host == host)
+			return pin;
+	}
+	return NULL;
 }
 
 
@@ -1016,6 +1052,98 @@ MapView::_DrawSelf()
 		SetHighColor(255, 255, 255);
 		DrawString(fSelfLabel.String(), labelPos);
 	}
+}
+
+
+void
+MapView::_DrawConnectionArc()
+{
+	if (!fHasSelfPosition)
+		return;
+	const ServerPin* target = _FindPinByHost(fActiveHost);
+	if (target == NULL)
+		return;
+
+	BPoint a = _LatLonToScreen(fSelfLat, fSelfLon);
+	BPoint b = _LatLonToScreen(target->latitude, target->longitude);
+
+	float dx = b.x - a.x;
+	float dy = b.y - a.y;
+	float length = sqrtf(dx * dx + dy * dy);
+	if (length < 1.0f)
+		return;
+
+	// Bulge the curve toward the top of the screen by a fraction of the
+	// chord length, scaled by the longitude span so short hops stay nearly
+	// straight and trans-oceanic hops get a clear arc.
+	BPoint mid((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+	float nx = -dy / length;
+	float ny =  dx / length;
+	if (ny > 0) {	// pick the perpendicular that points "up" on screen
+		nx = -nx;
+		ny = -ny;
+	}
+	float bulge = length * 0.18f;
+	BPoint ctrl(mid.x + nx * bulge, mid.y + ny * bulge);
+
+	// Two-pass stroke: a wide soft glow underneath, then a thinner solid
+	// line on top. Matches the look of the self-position ring so the eye
+	// reads the pair as belonging to one mark.
+	SetDrawingMode(B_OP_ALPHA);
+	SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
+
+	const int kSegments = 28;
+	BPoint prev = a;
+	BPoint pts[kSegments + 1];
+	pts[0] = a;
+	for (int i = 1; i <= kSegments; i++) {
+		float t = (float)i / (float)kSegments;
+		float u = 1.0f - t;
+		pts[i].x = u * u * a.x + 2 * u * t * ctrl.x + t * t * b.x;
+		pts[i].y = u * u * a.y + 2 * u * t * ctrl.y + t * t * b.y;
+	}
+
+	SetHighColor(80, 180, 255, 70);
+	SetPenSize(6.0f);
+	prev = pts[0];
+	for (int i = 1; i <= kSegments; i++) {
+		StrokeLine(prev, pts[i]);
+		prev = pts[i];
+	}
+
+	SetHighColor(80, 180, 255, 230);
+	SetPenSize(2.0f);
+	prev = pts[0];
+	for (int i = 1; i <= kSegments; i++) {
+		StrokeLine(prev, pts[i]);
+		prev = pts[i];
+	}
+
+	// Small filled arrowhead at the server end, oriented along the last
+	// curve segment.
+	BPoint tip = pts[kSegments];
+	BPoint tail = pts[kSegments - 1];
+	float vx = tip.x - tail.x;
+	float vy = tip.y - tail.y;
+	float vlen = sqrtf(vx * vx + vy * vy);
+	if (vlen > 0.001f) {
+		vx /= vlen;
+		vy /= vlen;
+		// Perpendicular for the arrowhead base.
+		float px = -vy;
+		float py =  vx;
+		const float head = 9.0f;
+		const float halfWidth = 4.5f;
+		BPoint base(tip.x - vx * head, tip.y - vy * head);
+		BPoint left(base.x + px * halfWidth, base.y + py * halfWidth);
+		BPoint right(base.x - px * halfWidth, base.y - py * halfWidth);
+		BPoint triangle[3] = { tip, left, right };
+		SetHighColor(80, 180, 255, 230);
+		FillPolygon(triangle, 3);
+	}
+
+	SetPenSize(1.0f);
+	SetDrawingMode(B_OP_COPY);
 }
 
 

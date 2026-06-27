@@ -118,6 +118,22 @@ static const char* const kFieldCountry			= "soto:country";
 // which is NOT the same as kFieldLocalIP (the private in-tunnel address).
 static const char* const kFieldExternalIP		= "soto:externalIP";
 
+// "Home" location -- where the daemon's geo-lookup placed us when no VPN
+// was up. Resolved once at daemon startup (and refreshed after every
+// disconnect), broadcast in every status update so the map can draw the
+// "you are here" pin without needing its own HTTP client.
+// kFieldHomeIP / kFieldHomeCountry are strings; kFieldHomeLat/Lon are
+// floats. Any of them may be absent on lookup failure.
+static const char* const kFieldHomeIP			= "soto:home:ip";
+static const char* const kFieldHomeCountry		= "soto:home:country";
+static const char* const kFieldHomeLat			= "soto:home:lat";
+static const char* const kFieldHomeLon			= "soto:home:lon";
+
+// The vpngate host the active session was started against (if any).
+// Empty / absent outside the [Connecting .. Connected] window; the map
+// uses it to know which pin should anchor the "connection arc".
+static const char* const kFieldConnectedHost	= "soto:connected:host";
+
 // Transient connect-time credentials. Plaintext; never persisted by the
 // daemon. The GUI strips them from the message after delivery.
 static const char* const kFieldUsername			= "soto:auth:username";

@@ -10,6 +10,7 @@
 
 #include <Application.h>
 #include <Messenger.h>
+#include <String.h>
 
 #include "ProfileStore.h"
 #include "VPNState.h"
@@ -67,6 +68,8 @@ private:
 			void				_HandleStatusForNotification(
 									BMessage* message);
 			void				_HandleCountryResult(BMessage* message);
+			void				_HandleHomeGeoResult(BMessage* message);
+			void				_KickHomeGeoLookup();
 			void				_PostNotification(const char* title,
 									const char* content, int32 type = 0);
 
@@ -95,6 +98,24 @@ private:
 	// geo-lookup result can rebuild the same notification text plus the
 	// country tag.
 			BString					fLastServerSummary;
+	// vpngate host currently being connected to, if the active session was
+	// started via kMsgConnectVPNGate. Empty for sessions started from a
+	// regular profile. Used so the map can highlight the right pin.
+			BString					fConnectedHost;
+
+	// "Home" geo: where ip-api places our underlying carrier when no VPN
+	// is up. Filled in once at startup (and on every disconnect) and folded
+	// into every status broadcast so subscribed clients can show a "you
+	// are here" marker without their own lookup. fHomeLat == 0 && fHomeLon
+	// == 0 means "not yet resolved" (or genuinely Null Island; we accept
+	// the false negative there).
+			BString					fHomeCountry;
+			BString					fHomeIP;
+			float					fHomeLat;
+			float					fHomeLon;
+	// Guard against multiple in-flight home lookups (the disconnect path
+	// can fire several times in a row).
+			bool					fHomeLookupInFlight;
 
 	// VPNGate catalogue cache. Held as a fully-formed kMsgVPNGateList
 	// message so a cache hit is just a SendMessage, no copying. Empty

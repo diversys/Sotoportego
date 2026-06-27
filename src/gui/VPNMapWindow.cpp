@@ -56,6 +56,18 @@ VPNMapWindow::VPNMapWindow()
 	_RefreshSidePanel();
 	_EnsureDaemon();
 	_RequestCatalogue(false);
+
+	// Subscribe to status broadcasts so the map can plant the "you are
+	// here" pin (from kFieldHomeLat/Lon) and highlight the connected
+	// server (from kFieldConnectedHost) without doing its own lookups.
+	if (fServer.IsValid()) {
+		BMessage subscribe(kMsgSubscribe);
+		subscribe.AddMessenger(kFieldClient, BMessenger(this));
+		fServer.SendMessage(&subscribe);
+		BMessage status(kMsgGetStatus);
+		status.AddMessenger(kFieldClient, BMessenger(this));
+		fServer.SendMessage(&status);
+	}
 }
 
 
@@ -407,6 +419,34 @@ VPNMapWindow::MessageReceived(BMessage* message)
 		case kMsgVPNGateList:
 			_ApplyCatalogue(message);
 			break;
+
+		case kMsgStatusUpdate:
+		{
+			if (fMap == NULL)
+				break;
+			// Self pin: only update once both lat and lon arrive (the
+			// daemon omits them on lookup failure rather than sending
+			// zeroes, so a missing field means "still don't know").
+			float lat = 0.0f, lon = 0.0f;
+			if (message->FindFloat(kFieldHomeLat, &lat) == B_OK
+					&& message->FindFloat(kFieldHomeLon, &lon) == B_OK) {
+				const char* country = NULL;
+				message->FindString(kFieldHomeCountry, &country);
+				fMap->SetSelfPosition(lat, lon,
+					country != NULL ? country : "You are here");
+			}
+			// Connected pin: empty string means "no active session"; the
+			// MapView treats unknown hosts as "no arc", so this works
+			// whether the catalogue has loaded yet or not.
+			const char* connectedHost = NULL;
+			if (message->FindString(kFieldConnectedHost, &connectedHost)
+					== B_OK && connectedHost != NULL) {
+				fMap->SetActiveHost(BString(connectedHost));
+			} else {
+				fMap->SetActiveHost(BString(""));
+			}
+			break;
+		}
 
 		case kMsgConnectPicked:
 			_BeginConnectFlow();

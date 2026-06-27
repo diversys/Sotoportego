@@ -84,11 +84,20 @@ public:
 			void				SetSelectedHost(const BString& host);
 			const ServerPin*	SelectedServer() const;
 
-	// "You are here" marker (currently unused -- left as the seam for a
-	// future "look up my public IP" hookup).
+	// "You are here" marker. Wired to the daemon's home geo-lookup: the
+	// daemon resolves where our underlying carrier puts us and pushes the
+	// values into kFieldHomeLat/kFieldHomeLon in every status broadcast,
+	// VPNMapWindow plumbs them into here.
 			void				SetSelfPosition(float lat, float lon,
 									const char* label);
 			void				ClearSelf();
+
+	// Tell the map which server pin is currently the live VPN endpoint, so
+	// it can draw a "connection arc" between SelfPosition and that pin.
+	// Pass an empty string to clear the active host (e.g. on disconnect).
+	// Unknown hosts are stored but ignored at draw time; calling
+	// SetActiveHost before AddServer is therefore safe.
+			void				SetActiveHost(const BString& host);
 
 			void				ZoomIn();
 			void				ZoomOut();
@@ -115,8 +124,11 @@ private:
 			void				_DrawPins();
 			void				_DrawPin(const ServerPin& pin);
 			void				_DrawSelf();
+			void				_DrawConnectionArc();
 			void				_DrawScaleBar();
 			void				_DrawCompass();
+
+			const ServerPin*	_FindPinByHost(const BString& host) const;
 
 			ServerPin*			_FindPinAt(BPoint where);
 			int					_ZoomToTileZoom() const;
@@ -127,6 +139,7 @@ private:
 			float				fSelfLat;
 			float				fSelfLon;
 			BString				fSelfLabel;
+			BString				fActiveHost;
 
 			float				fCenterLat;
 			float				fCenterLon;
