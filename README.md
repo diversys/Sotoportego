@@ -16,6 +16,12 @@ routing fix-up, live throughput and event log.
   <em>Statistics tab — session totals and a timestamped event log.</em>
 </p>
 
+<p align="center">
+  <img src="img/screenshot03.png" alt="Map view" width="640" /><br/>
+  <em>Map view — the live VPNGate catalogue with the user's home pin in Italy,
+  the connected server highlighted in red, and the arc tracing the tunnel.</em>
+</p>
+
 If Sotoportego saves you time, consider supporting development: [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-atomozero-yellow?logo=buymeacoffee)](https://buymeacoffee.com/atomozero)
 
 
