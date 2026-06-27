@@ -11,8 +11,17 @@
 #include <Message.h>
 #include <Notification.h>
 
+#include <fcntl.h>
+#include <sys/stat.h>
+
+#include <Directory.h>
+#include <File.h>
+#include <FindDirectory.h>
+#include <Path.h>
+
 #include "GeoLookup.h"
 #include "OpenVPNBackend.h"
+#include "VPNGateFetcher.h"
 #include "VPNProfile.h"
 #include "VPNProtocol.h"
 #include "VPNStats.h"
@@ -21,6 +30,16 @@
 // Internal 'what' for the geo-lookup result. Stays in this translation unit
 // because no client should ever see it.
 static const uint32 kMsgCountryResult = 'sCty';
+
+// Internal 'what' fired by VPNGateFetcher once the catalogue is in (or once
+// the fetch has failed). Carries the same payload as kMsgVPNGateList; we
+// rewrap it before broadcasting.
+static const uint32 kMsgVPNGateFetched = 'sVGr';
+
+// How long a successful catalogue stays warm before we ask vpngate again.
+// Public-server churn is on the order of hours; an interactive user is more
+// likely to want a snappier "Refresh" than a perpetually up-to-the-minute list.
+static const bigtime_t kCatalogueTTL	= 10 * 60 * 1000000LL;	// 10 minutes
 
 // Identifier the notification server uses to update the same toast rather
 // than stacking new ones for every transition.
@@ -34,7 +53,11 @@ SotoportegoServer::SotoportegoServer()
 	fBackend(NULL),
 	fProfiles(),
 	fLastState(VPN_STATE_DISCONNECTED),
-	fLastServerSummary()
+	fLastServerSummary(),
+	fCatalogueCache(),
+	fCatalogueFetchedAt(0),
+	fCatalogueFetchInFlight(false),
+	fCataloguePending()
 {
 	fProfiles.Load();
 }
@@ -58,6 +81,12 @@ SotoportegoServer::ReadyToRun()
 	fBackend = new OpenVPNBackend();
 	AddHandler(fBackend);
 	fBackend->SetObserver(BMessenger(this));
+
+	// If the previous run crashed mid-session it left the default route
+	// pointing at a dead tun device, which means the user has no internet
+	// right now. Roll the routes back to whatever the session file recorded
+	// so they're online again before they have to look up what we did.
+	fBackend->RecoverIfCrashed();
 
 	printf("[server] Sotoportego daemon ready (%s)\n", kServerSignature);
 }
@@ -88,6 +117,17 @@ SotoportegoServer::MessageReceived(BMessage* message)
 			break;
 		case kMsgDeleteProfile:
 			_HandleDeleteProfile(message);
+			break;
+		case kMsgRequestVPNGate:
+			_HandleRequestVPNGate(message);
+			break;
+		case kMsgConnectVPNGate:
+			_HandleConnectVPNGate(message);
+			break;
+
+		// --- Internal: VPNGate catalogue arrived from the fetcher --------
+		case kMsgVPNGateFetched:
+			_HandleVPNGateFetched(message);
 			break;
 
 		// --- Events from the backend (we are its observer) -------------
@@ -441,8 +481,17 @@ SotoportegoServer::_HandleCountryResult(BMessage* message)
 	const char* country = NULL;
 	if (message->FindString(GeoLookup::kFieldCountry, &country) != B_OK
 			|| country == NULL || *country == '\0') {
-		return;
+		country = "";
 	}
+	const char* externalIP = NULL;
+	if (message->FindString(GeoLookup::kFieldQueryIP, &externalIP) != B_OK
+			|| externalIP == NULL) {
+		externalIP = "";
+	}
+
+	// Need at least one of the two to be useful.
+	if (country[0] == '\0' && externalIP[0] == '\0')
+		return;
 
 	// Server on the first line, country alone on the second -- the
 	// context makes the label redundant and the country is the part
@@ -452,18 +501,23 @@ SotoportegoServer::_HandleCountryResult(BMessage* message)
 		content << fLastServerSummary;
 	else
 		content << "VPN";
-	content << "\n";
-	content << country;
+	if (country[0] != '\0') {
+		content << "\n";
+		content << country;
+	}
 	_PostNotification("Sotoportego", content.String(),
 		B_INFORMATION_NOTIFICATION);
 
 	// Also push a status update so subscribed clients (the GUI) can
-	// surface the country in their own UI. Reuses _FillStatus so the
-	// payload looks like any other status broadcast plus the new
-	// kFieldCountry field.
+	// surface the country / external IP in their own UI. Reuses
+	// _FillStatus so the payload looks like any other status broadcast
+	// plus the geo fields.
 	BMessage update(kMsgStatusUpdate);
 	_FillStatus(&update);
-	update.AddString(kFieldCountry, country);
+	if (country[0] != '\0')
+		update.AddString(kFieldCountry, country);
+	if (externalIP[0] != '\0')
+		update.AddString(kFieldExternalIP, externalIP);
 	_Broadcast(&update);
 }
 
@@ -480,4 +534,224 @@ SotoportegoServer::_ClientFrom(BMessage* message) const
 	}
 
 	return message->ReturnAddress();
+}
+
+
+// --- VPNGate catalogue ----------------------------------------------------
+
+void
+SotoportegoServer::_HandleRequestVPNGate(BMessage* message)
+{
+	BMessenger client = _ClientFrom(message);
+	if (!client.IsValid())
+		return;
+
+	// Honour the cache only if the requester didn't ask for a refresh.
+	bool force = false;
+	if (message->FindBool("force", &force) != B_OK)
+		force = false;
+
+	bigtime_t now = system_time();
+	if (!force && fCatalogueFetchedAt > 0
+			&& (now - fCatalogueFetchedAt) < kCatalogueTTL
+			&& fCatalogueCache.CountNames(B_ANY_TYPE) > 0) {
+		client.SendMessage(&fCatalogueCache);
+		return;
+	}
+
+	fCataloguePending.push_back(client);
+	if (!fCatalogueFetchInFlight)
+		_KickVPNGateFetch();
+}
+
+
+void
+SotoportegoServer::_KickVPNGateFetch()
+{
+	fCatalogueFetchInFlight = true;
+	printf("[server] fetching VPNGate catalogue\n");
+	VPNGateFetcher::BackgroundFetch(BMessenger(this), kMsgVPNGateFetched);
+}
+
+
+void
+SotoportegoServer::_HandleVPNGateFetched(BMessage* message)
+{
+	fCatalogueFetchInFlight = false;
+
+	// Build the reply once, then ship it to everyone waiting. Reusing
+	// fCatalogueCache as the reply means a follow-up cache hit is just a
+	// pointer pass.
+	fCatalogueCache.MakeEmpty();
+	fCatalogueCache.what = kMsgVPNGateList;
+
+	BMessage entry;
+	for (int32 i = 0; message->FindMessage(kFieldVPNGateServer, i, &entry)
+			== B_OK; i++) {
+		fCatalogueCache.AddMessage(kFieldVPNGateServer, &entry);
+	}
+	const char* error = NULL;
+	if (message->FindString(kFieldError, &error) == B_OK && error != NULL)
+		fCatalogueCache.AddString(kFieldError, error);
+
+	fCatalogueFetchedAt = system_time();
+
+	for (size_t i = 0; i < fCataloguePending.size(); i++)
+		fCataloguePending[i].SendMessage(&fCatalogueCache);
+	fCataloguePending.clear();
+}
+
+
+// Minimal RFC 4648 base64 decoder. Returns true on success and writes the
+// raw bytes into `out`; returns false if `in` contains stray characters or
+// has invalid padding.
+static bool
+decode_base64(const char* in, std::string& out)
+{
+	static const int kTable[256] = {
+		// Initialise to -1 by relying on C++ zero-init then patch the valid
+		// alphabet at runtime once. The compiler still folds this into a
+		// table; clarity beats premature golf.
+		-2
+	};
+	static int kReady = 0;
+	static int kReal[256];
+	if (!kReady) {
+		for (int i = 0; i < 256; i++)
+			kReal[i] = -1;
+		const char* alpha =
+			"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+		for (int i = 0; i < 64; i++)
+			kReal[(unsigned char)alpha[i]] = i;
+		kReady = 1;
+	}
+	(void)kTable;
+
+	int buffer = 0;
+	int bits = 0;
+	out.clear();
+	for (const char* p = in; *p; p++) {
+		unsigned char c = (unsigned char)*p;
+		if (c == ' ' || c == '\t' || c == '\r' || c == '\n')
+			continue;
+		if (c == '=')
+			break;
+		int v = kReal[c];
+		if (v < 0)
+			return false;
+		buffer = (buffer << 6) | v;
+		bits += 6;
+		if (bits >= 8) {
+			bits -= 8;
+			out.push_back((char)((buffer >> bits) & 0xFF));
+		}
+	}
+	return true;
+}
+
+
+BString
+SotoportegoServer::_WriteVPNGateConfig(const char* host,
+	const char* base64Body)
+{
+	if (host == NULL || base64Body == NULL)
+		return BString();
+
+	BPath dir;
+	if (find_directory(B_USER_CACHE_DIRECTORY, &dir) != B_OK)
+		return BString();
+	dir.Append("Sotoportego");
+	dir.Append("vpngate");
+	create_directory(dir.Path(), 0755);
+
+	// Sanitise the host name into a filename: only ASCII alnum, dot, dash,
+	// underscore. Anything else gets replaced with '_' so we can't be
+	// tricked into walking out of the cache dir with "../../etc/passwd".
+	BString safe;
+	for (int32 i = 0; host[i] != '\0'; i++) {
+		char c = host[i];
+		bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+			|| (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_';
+		safe << (ok ? c : '_');
+	}
+	if (safe.Length() == 0)
+		safe = "server";
+	safe << ".ovpn";
+
+	BPath out(dir.Path());
+	out.Append(safe.String());
+
+	std::string decoded;
+	if (!decode_base64(base64Body, decoded) || decoded.empty()) {
+		printf("[server] vpngate: base64 decode failed for %s\n", host);
+		return BString();
+	}
+
+	BFile file(out.Path(), B_WRITE_ONLY | B_CREATE_FILE | B_ERASE_FILE);
+	if (file.InitCheck() != B_OK)
+		return BString();
+	if (file.Write(decoded.data(), decoded.size()) != (ssize_t)decoded.size())
+		return BString();
+
+	return BString(out.Path());
+}
+
+
+void
+SotoportegoServer::_HandleConnectVPNGate(BMessage* message)
+{
+	if (fBackend == NULL)
+		return;
+
+	const char* host = NULL;
+	const char* base64 = NULL;
+	const char* ccLong = NULL;
+	if (message->FindString(kFieldVPNGateHost, &host) != B_OK || host == NULL
+			|| message->FindString(kFieldVPNGateConfigBase64, &base64) != B_OK
+			|| base64 == NULL) {
+		printf("[server] connect-vpngate rejected: missing host/config\n");
+		return;
+	}
+	message->FindString(kFieldVPNGateCountryLong, &ccLong);
+
+	BString configPath = _WriteVPNGateConfig(host, base64);
+	if (configPath.Length() == 0) {
+		BMessage reply(kMsgStatusUpdate);
+		_FillStatus(&reply);
+		reply.AddString(kFieldDetail, "could not stage vpngate .ovpn");
+		BMessenger client = _ClientFrom(message);
+		if (client.IsValid())
+			client.SendMessage(&reply);
+		return;
+	}
+
+	// Synthesize a one-shot in-memory VPNProfile pointing at the staged
+	// .ovpn and reuse the standard Connect message. This keeps the
+	// backend ignorant of where the profile came from.
+	VPNProfile profile;
+	profile.fBackendType = VPN_BACKEND_OPENVPN;
+	profile.fName << "VPNGate " << host;
+	if (ccLong != NULL && ccLong[0] != '\0')
+		profile.fName << " (" << ccLong << ")";
+	profile.fServer = host;
+	profile.fPort = 443;	// nominal; openvpn picks the real one from the .ovpn
+	profile.fConfigPath = configPath;
+
+	BMessage archive;
+	profile.Archive(&archive);
+
+	BMessage connect(kMsgConnect);
+	connect.AddMessage(kFieldProfile, &archive);
+
+	BMessenger client = _ClientFrom(message);
+	if (client.IsValid())
+		connect.AddMessenger(kFieldClient, client);
+	const char* user = NULL;
+	const char* pass = NULL;
+	if (message->FindString(kFieldUsername, &user) == B_OK && user != NULL)
+		connect.AddString(kFieldUsername, user);
+	if (message->FindString(kFieldPassword, &pass) == B_OK && pass != NULL)
+		connect.AddString(kFieldPassword, pass);
+
+	_HandleConnect(&connect);
 }

@@ -22,10 +22,12 @@ SRCS = \
 	SotoportegoServer.cpp \
 	ProfileStore.cpp \
 	GeoLookup.cpp \
+	VPNGateFetcher.cpp \
 	../backend/VPNBackend.cpp \
 	../backend/OpenVPNBackend.cpp \
 	../backend/OpenVPNManagement.cpp \
 	../common/OpenVPNConfigParser.cpp \
+	../common/CountryCentroids.cpp \
 	../common/VPNProfile.cpp \
 	../common/VPNState.cpp \
 	../common/VPNStats.cpp

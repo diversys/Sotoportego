@@ -63,7 +63,23 @@ enum {
 
 	// S -> C : the current profile list, broadcast on subscribe and whenever
 	// it changes. Each archived profile is added under kFieldProfile.
-	kMsgListProfiles	= 'sLst'
+	kMsgListProfiles	= 'sLst',
+
+	// C -> S : ask the daemon for the current VPNGate public-server
+	// catalogue. The daemon caches the catalogue; if a cached copy is fresh
+	// enough it replies immediately, otherwise it kicks off the fetcher
+	// thread and answers once the response arrives.
+	kMsgRequestVPNGate	= 'sRVG',
+
+	// S -> C : reply to kMsgRequestVPNGate (and broadcast to all subscribers
+	// when a fresh fetch completes). Carries one nested BMessage per server
+	// under kFieldVPNGateServer, or kFieldError if the fetch failed.
+	kMsgVPNGateList		= 'sLVG',
+
+	// C -> S : connect to a VPNGate server picked from the map. The .ovpn
+	// body is shipped in-message (base64 under kFieldVPNGateConfigBase64)
+	// so the daemon doesn't have to keep the whole catalogue resident.
+	kMsgConnectVPNGate	= 'sCVG'
 };
 
 
@@ -97,6 +113,11 @@ static const char* const kFieldRemoteIP			= "soto:remoteIP";
 // lookup completes and on any state other than CONNECTED.
 static const char* const kFieldCountry			= "soto:country";
 
+// Apparent egress (public) IP, also resolved by the geo-lookup. Same
+// lifetime as kFieldCountry; this is what the outside world sees us as,
+// which is NOT the same as kFieldLocalIP (the private in-tunnel address).
+static const char* const kFieldExternalIP		= "soto:externalIP";
+
 // Transient connect-time credentials. Plaintext; never persisted by the
 // daemon. The GUI strips them from the message after delivery.
 static const char* const kFieldUsername			= "soto:auth:username";
@@ -111,6 +132,29 @@ static const char* const kFieldProfileUsername	= "soto:profile:username";
 static const char* const kFieldProfileConfigPath = "soto:profile:configPath";
 // Transport protocol as a string ("udp" or "tcp"). Defaults to "udp".
 static const char* const kFieldProfileProtocol	= "soto:profile:protocol";
+
+// VPNGate catalogue fields. A kMsgVPNGateList message carries one nested
+// BMessage per server under kFieldVPNGateServer; each nested message in
+// turn carries the per-server fields below.
+static const char* const kFieldVPNGateServer			= "soto:vg:server";
+static const char* const kFieldVPNGateHost				= "soto:vg:host";
+static const char* const kFieldVPNGateIP				= "soto:vg:ip";
+static const char* const kFieldVPNGateCountryShort		= "soto:vg:cc";
+static const char* const kFieldVPNGateCountryLong		= "soto:vg:country";
+static const char* const kFieldVPNGateScore				= "soto:vg:score";
+static const char* const kFieldVPNGatePing				= "soto:vg:ping";
+static const char* const kFieldVPNGateSpeedMbps			= "soto:vg:speed";
+static const char* const kFieldVPNGateSessions			= "soto:vg:sessions";
+static const char* const kFieldVPNGateLogPolicy			= "soto:vg:logtype";
+static const char* const kFieldVPNGateLatitude			= "soto:vg:lat";
+static const char* const kFieldVPNGateLongitude			= "soto:vg:lon";
+// Base64-encoded raw OpenVPN config file body for the server. Decoded by
+// the daemon when kMsgConnectVPNGate arrives.
+static const char* const kFieldVPNGateConfigBase64		= "soto:vg:ovpn";
+
+// Generic error string on a failed request (e.g. fetcher couldn't reach
+// the catalogue server, parse failed, ...). Optional; absent means success.
+static const char* const kFieldError					= "soto:error";
 
 
 #endif	// VPN_PROTOCOL_H

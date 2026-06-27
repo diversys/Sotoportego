@@ -15,61 +15,21 @@
 #include <MenuBar.h>
 #include <MenuItem.h>
 #include <Message.h>
+#include <OS.h>
+#include <Roster.h>
 #include <StringView.h>
 
+#include "CredentialsWindow.h"
 #include "MapView.h"
+#include "VPNProtocol.h"
 
 
-// --- toolbar message codes -------------------------------------------------
+// --- toolbar / private message codes ---------------------------------------
 
-static const uint32 kMsgConnectPicked	= 'mwCo';
-static const uint32 kMsgRefresh			= 'mwRf';
-
-
-// --- test catalogue --------------------------------------------------------
-
-// Hardcoded list of ~10 servers placed in real cities so the world map
-// shows a recognisable spread (Tokyo + Osaka show the Japan-heavy bias
-// that motivates the clustering work in task #15). When the real
-// VPNGate fetcher lands, this seeds away and the catalogue arrives on
-// kMsgVPNGateList.
-struct TestServer {
-	const char*	host;
-	const char*	countryShort;
-	const char*	countryLong;
-	const char*	logPolicy;
-	float		latitude;
-	float		longitude;
-	int32		score;
-	int32		pingMs;
-	int32		speedMbps;
-	int32		sessions;
-};
-
-static const TestServer kTestServers[] = {
-	{ "public-vpn-219.opengw.net",	"JP", "Japan",			"2 weeks",
-		35.6762f,  139.6503f,	9821,	18,	112,	83 },
-	{ "vpn100383739.opengw.net",	"JP", "Japan",			"2 weeks",
-		34.6937f,  135.5023f,	7402,	24,	74,		61 },
-	{ "vpn-kr-01.opengw.net",		"KR", "Korea, South",	"30 days",
-		37.5665f,  126.9780f,	5210,	38,	61,		44 },
-	{ "vpn-sg-02.opengw.net",		"SG", "Singapore",		"7 days",
-		1.3521f,   103.8198f,	4900,	72,	58,		39 },
-	{ "vpn-de-fr.opengw.net",		"DE", "Germany",		"No log",
-		50.1109f,  8.6821f,		6320,	95,	88,		57 },
-	{ "vpn-fr-par.opengw.net",		"FR", "France",			"No log",
-		48.8566f,  2.3522f,		5780,	88,	76,		51 },
-	{ "vpn-uk-lon.opengw.net",		"GB", "United Kingdom",	"No log",
-		51.5074f,  -0.1278f,	5990,	84,	81,		54 },
-	{ "vpn-se-sto.opengw.net",		"SE", "Sweden",			"No log",
-		59.3293f,  18.0686f,	4520,	112,	60,		31 },
-	{ "vpn-us-nyc.opengw.net",		"US", "United States",	"30 days",
-		40.7128f,  -74.0060f,	8120,	125,	102,	72 },
-	{ "vpn-ca-tor.opengw.net",		"CA", "Canada",			"30 days",
-		43.6532f,  -79.3832f,	4710,	131,	66,	38 },
-};
-static const size_t kTestServerCount
-	= sizeof(kTestServers) / sizeof(kTestServers[0]);
+static const uint32 kMsgConnectPicked		= 'mwCo';
+static const uint32 kMsgRefresh				= 'mwRf';
+static const uint32 kMsgCredentialsOK		= 'mwCO';
+static const uint32 kMsgCredentialsCancel	= 'mwCC';
 
 
 // --- VPNMapWindow ----------------------------------------------------------
@@ -88,11 +48,14 @@ VPNMapWindow::VPNMapWindow()
 	fSessionsValue(NULL),
 	fLogPolicyValue(NULL),
 	fStatusBar(NULL),
-	fConnectButton(NULL)
+	fConnectButton(NULL),
+	fServer(),
+	fOvpnByHost()
 {
 	_BuildLayout();
-	_SeedTestPins();
 	_RefreshSidePanel();
+	_EnsureDaemon();
+	_RequestCatalogue(false);
 }
 
 
@@ -162,10 +125,8 @@ VPNMapWindow::_BuildLayout()
 	fConnectButton->SetEnabled(false);
 
 	// --- status bar -----------------------------------------------------
-	char status[64];
-	snprintf(status, sizeof(status), "%zu server(s) loaded",
-		kTestServerCount);
-	fStatusBar = new BStringView("statusBar", status);
+	fStatusBar = new BStringView("statusBar",
+		"Fetching server catalogue from vpngate.net" B_UTF8_ELLIPSIS);
 	BFont small(be_plain_font);
 	small.SetSize(small.Size() * 0.9f);
 	fStatusBar->SetFont(&small);
@@ -192,28 +153,178 @@ VPNMapWindow::_BuildLayout()
 
 
 void
-VPNMapWindow::_SeedTestPins()
+VPNMapWindow::_EnsureDaemon()
 {
-	if (fMap == NULL)
+	if (fServer.IsValid())
 		return;
 
-	fMap->ClearServers();
-	for (size_t i = 0; i < kTestServerCount; i++) {
-		const TestServer& s = kTestServers[i];
-		ServerPin pin;
-		pin.host = s.host;
-		pin.countryShort = s.countryShort;
-		pin.countryLong = s.countryLong;
-		pin.logPolicy = s.logPolicy;
-		pin.latitude = s.latitude;
-		pin.longitude = s.longitude;
-		pin.score = s.score;
-		pin.pingMs = s.pingMs;
-		pin.speedMbps = s.speedMbps;
-		pin.sessions = s.sessions;
-		fMap->AddServer(pin);
+	if (be_roster->Launch(kServerSignature) != B_OK
+			&& be_roster->Launch(kServerSignature) != B_ALREADY_RUNNING) {
+		// The roster will keep trying; we'll resolve in the loop below.
 	}
+	for (int attempt = 0; attempt < 30; attempt++) {
+		fServer = BMessenger(kServerSignature);
+		if (fServer.IsValid())
+			return;
+		snooze(100000);
+	}
+}
+
+
+void
+VPNMapWindow::_RequestCatalogue(bool force)
+{
+	if (!fServer.IsValid()) {
+		_EnsureDaemon();
+		if (!fServer.IsValid()) {
+			if (fStatusBar != NULL)
+				fStatusBar->SetText(
+					"Daemon not reachable. Start sotoportego_server.");
+			return;
+		}
+	}
+
+	BMessage req(kMsgRequestVPNGate);
+	req.AddMessenger(kFieldClient, BMessenger(this));
+	if (force)
+		req.AddBool("force", true);
+	fServer.SendMessage(&req);
+
+	if (fStatusBar != NULL) {
+		fStatusBar->SetText(force
+			? "Refreshing server catalogue" B_UTF8_ELLIPSIS
+			: "Fetching server catalogue from vpngate.net" B_UTF8_ELLIPSIS);
+	}
+}
+
+
+void
+VPNMapWindow::_ApplyCatalogue(BMessage* message)
+{
+	if (fMap == NULL || message == NULL)
+		return;
+
+	const char* error = NULL;
+	message->FindString(kFieldError, &error);
+	BMessage probe;
+	bool anyServer = message->FindMessage(kFieldVPNGateServer, 0, &probe)
+		== B_OK;
+	if (error != NULL && !anyServer) {
+		// Pure failure: no servers AND an error string. Tell the user.
+		BString status("Catalogue fetch failed: ");
+		status << error;
+		if (fStatusBar != NULL)
+			fStatusBar->SetText(status.String());
+		return;
+	}
+
+	fMap->ClearServers();
+	fOvpnByHost.clear();
+
+	BMessage entry;
+	int32 count = 0;
+	for (int32 i = 0;
+			message->FindMessage(kFieldVPNGateServer, i, &entry) == B_OK;
+			i++) {
+		ServerPin pin;
+		const char* host = NULL;
+		entry.FindString(kFieldVPNGateHost, &host);
+		if (host == NULL || host[0] == '\0')
+			continue;
+		pin.host = host;
+
+		const char* s = NULL;
+		if (entry.FindString(kFieldVPNGateCountryShort, &s) == B_OK)
+			pin.countryShort = s;
+		if (entry.FindString(kFieldVPNGateCountryLong, &s) == B_OK)
+			pin.countryLong = s;
+		if (entry.FindString(kFieldVPNGateLogPolicy, &s) == B_OK)
+			pin.logPolicy = s;
+
+		entry.FindFloat(kFieldVPNGateLatitude, &pin.latitude);
+		entry.FindFloat(kFieldVPNGateLongitude, &pin.longitude);
+		entry.FindInt32(kFieldVPNGateScore, &pin.score);
+		entry.FindInt32(kFieldVPNGatePing, &pin.pingMs);
+		entry.FindInt32(kFieldVPNGateSpeedMbps, &pin.speedMbps);
+		entry.FindInt32(kFieldVPNGateSessions, &pin.sessions);
+
+		fMap->AddServer(pin);
+
+		const char* ovpn = NULL;
+		if (entry.FindString(kFieldVPNGateConfigBase64, &ovpn) == B_OK
+				&& ovpn != NULL) {
+			fOvpnByHost[pin.host] = ovpn;
+		}
+		count++;
+	}
+
 	fMap->ZoomToFit();
+	_RefreshSidePanel();
+
+	if (fStatusBar != NULL) {
+		BString status;
+		status << count << " server" << (count == 1 ? "" : "s")
+			<< " loaded";
+		if (error != NULL && error[0] != '\0')
+			status << " (partial: " << error << ")";
+		fStatusBar->SetText(status.String());
+	}
+}
+
+
+void
+VPNMapWindow::_BeginConnectFlow()
+{
+	const ServerPin* picked = fMap != NULL ? fMap->SelectedServer() : NULL;
+	if (picked == NULL)
+		return;
+
+	BString prefilled("vpn");	// vpngate's documented anonymous credentials
+	CredentialsWindow* prompt = new CredentialsWindow(this, BMessenger(this),
+		kMsgCredentialsOK, kMsgCredentialsCancel,
+		picked->host.String(), prefilled);
+	prompt->Show();
+}
+
+
+void
+VPNMapWindow::_SendConnectWith(const char* user, const char* pass)
+{
+	if (!fServer.IsValid())
+		return;
+
+	const ServerPin* picked = fMap != NULL ? fMap->SelectedServer() : NULL;
+	if (picked == NULL)
+		return;
+
+	std::map<BString, BString>::const_iterator it
+		= fOvpnByHost.find(picked->host);
+	if (it == fOvpnByHost.end()) {
+		BAlert* alert = new BAlert("noConfig",
+			"This server has no .ovpn payload cached; refresh the catalogue.",
+			"OK");
+		alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
+		alert->Go(NULL);
+		return;
+	}
+
+	BMessage connect(kMsgConnectVPNGate);
+	connect.AddMessenger(kFieldClient, BMessenger(this));
+	connect.AddString(kFieldVPNGateHost, picked->host);
+	connect.AddString(kFieldVPNGateCountryLong, picked->countryLong);
+	connect.AddString(kFieldVPNGateConfigBase64, it->second.String());
+	if (user != NULL && user[0] != '\0')
+		connect.AddString(kFieldUsername, user);
+	if (pass != NULL && pass[0] != '\0')
+		connect.AddString(kFieldPassword, pass);
+	fServer.SendMessage(&connect);
+
+	if (fStatusBar != NULL) {
+		BString status("Connecting to ");
+		status << picked->host;
+		status << B_UTF8_ELLIPSIS;
+		fStatusBar->SetText(status.String());
+	}
 }
 
 
@@ -290,31 +401,29 @@ VPNMapWindow::MessageReceived(BMessage* message)
 			break;
 
 		case kMsgRefresh:
-			// Until the daemon-side VPNGate fetcher lands (task #12), the
-			// catalogue is the static test list; "Refresh" just re-seeds
-			// it so the user sees the action took effect.
-			_SeedTestPins();
-			_RefreshSidePanel();
+			_RequestCatalogue(true);
+			break;
+
+		case kMsgVPNGateList:
+			_ApplyCatalogue(message);
 			break;
 
 		case kMsgConnectPicked:
+			_BeginConnectFlow();
+			break;
+
+		case kMsgCredentialsOK:
 		{
-			// Click-to-connect through the daemon is task #14. Until then
-			// surface a helpful alert that shows what would happen rather
-			// than failing silently.
-			const ServerPin* picked = fMap != NULL
-				? fMap->SelectedServer() : NULL;
-			if (picked == NULL)
-				break;
-			BString body("Connect-to-pin is not wired up yet.\n\n");
-			body << "Would request the .ovpn body for ";
-			body << picked->host;
-			body << " from the daemon, then run the existing OpenVPN flow.";
-			BAlert* alert = new BAlert("notYetWired", body.String(), "OK");
-			alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
-			alert->Go(NULL);
+			const char* user = "";
+			const char* pass = "";
+			message->FindString(kFieldUsername, &user);
+			message->FindString(kFieldPassword, &pass);
+			_SendConnectWith(user, pass);
 			break;
 		}
+		case kMsgCredentialsCancel:
+			// User backed out; leave the side panel alone.
+			break;
 
 		default:
 			BWindow::MessageReceived(message);

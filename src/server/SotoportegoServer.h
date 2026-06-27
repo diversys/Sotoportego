@@ -44,6 +44,20 @@ private:
 			void				_HandleGetStatus(BMessage* message);
 			void				_HandleSaveProfile(BMessage* message);
 			void				_HandleDeleteProfile(BMessage* message);
+			void				_HandleRequestVPNGate(BMessage* message);
+			void				_HandleConnectVPNGate(BMessage* message);
+
+	// VPNGate catalogue lifecycle: when a client asks for it we either
+	// return the cached copy or queue them up behind one in-flight fetcher
+	// thread; when the thread comes back we reply to every queued client.
+			void				_HandleVPNGateFetched(BMessage* message);
+			void				_KickVPNGateFetch();
+
+	// Decode `base64Body` and write it to a fresh .ovpn file inside the
+	// daemon's cache dir. `host` is used to name the file. Returns the
+	// final path on success, an empty BString on failure.
+			BString				_WriteVPNGateConfig(const char* host,
+									const char* base64Body);
 
 	// Watch incoming status updates for the transitions that warrant a
 	// desktop notification (Connected, Disconnected, Error) and fan them
@@ -81,6 +95,16 @@ private:
 	// geo-lookup result can rebuild the same notification text plus the
 	// country tag.
 			BString					fLastServerSummary;
+
+	// VPNGate catalogue cache. Held as a fully-formed kMsgVPNGateList
+	// message so a cache hit is just a SendMessage, no copying. Empty
+	// when nothing has been fetched yet; populated by _HandleVPNGateFetched.
+			BMessage				fCatalogueCache;
+			bigtime_t				fCatalogueFetchedAt;
+			bool					fCatalogueFetchInFlight;
+	// Clients that asked for the catalogue while a fetch was running. They
+	// all get the same reply once it lands.
+			std::vector<BMessenger>	fCataloguePending;
 };
 
 
