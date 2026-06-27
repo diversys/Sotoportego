@@ -20,6 +20,7 @@
 #include <StringView.h>
 
 #include "CredentialsWindow.h"
+#include "HeaderView.h"
 #include "MapView.h"
 #include "VPNProtocol.h"
 
@@ -40,6 +41,7 @@ VPNMapWindow::VPNMapWindow()
 		"Browse servers on map",
 		B_TITLED_WINDOW,
 		B_AUTO_UPDATE_SIZE_LIMITS | B_QUIT_ON_WINDOW_CLOSE),
+	fHeader(NULL),
 	fMap(NULL),
 	fHostValue(NULL),
 	fCountryValue(NULL),
@@ -49,11 +51,16 @@ VPNMapWindow::VPNMapWindow()
 	fLogPolicyValue(NULL),
 	fStatusBar(NULL),
 	fConnectButton(NULL),
+	fState(VPN_STATE_DISCONNECTED),
+	fConnectedHost(),
+	fHomeCountry(),
+	fServerCount(0),
 	fServer(),
 	fOvpnByHost()
 {
 	_BuildLayout();
 	_RefreshSidePanel();
+	_RefreshHeader();
 	_EnsureDaemon();
 	_RequestCatalogue(false);
 
@@ -93,6 +100,13 @@ VPNMapWindow::_BuildLayout()
 	mapMenu->AddItem(new BMenuItem("Close",
 		new BMessage(B_QUIT_REQUESTED), 'W'));
 	menuBar->AddItem(mapMenu);
+
+	// --- header banner --------------------------------------------------
+	// Same HeaderView the main window uses, so the map feels part of the
+	// same product: brand tile + status dot + title + a live subtitle that
+	// reflects what the user is looking at (catalogue size, home country,
+	// active VPN host).
+	fHeader = new HeaderView("mapHeader");
 
 	// --- map ------------------------------------------------------------
 	fMap = new MapView("worldMap");
@@ -145,6 +159,7 @@ VPNMapWindow::_BuildLayout()
 
 	BLayoutBuilder::Group<>(this, B_VERTICAL, 0)
 		.Add(menuBar)
+		.Add(fHeader)
 		.AddGroup(B_HORIZONTAL, B_USE_DEFAULT_SPACING)
 			.SetInsets(B_USE_WINDOW_INSETS, B_USE_HALF_ITEM_SPACING,
 				B_USE_WINDOW_INSETS, B_USE_HALF_ITEM_SPACING)
@@ -270,8 +285,10 @@ VPNMapWindow::_ApplyCatalogue(BMessage* message)
 		count++;
 	}
 
+	fServerCount = count;
 	fMap->ZoomToFit();
 	_RefreshSidePanel();
+	_RefreshHeader();
 
 	if (fStatusBar != NULL) {
 		BString status;
@@ -337,6 +354,31 @@ VPNMapWindow::_SendConnectWith(const char* user, const char* pass)
 		status << B_UTF8_ELLIPSIS;
 		fStatusBar->SetText(status.String());
 	}
+}
+
+
+void
+VPNMapWindow::_RefreshHeader()
+{
+	if (fHeader == NULL)
+		return;
+
+	fHeader->SetState(fState);
+
+	BString subtitle;
+	// "Connected to vpn123" wins while a session is up; otherwise show the
+	// catalogue size + home country if known.
+	if (fConnectedHost.Length() > 0) {
+		subtitle << "Connected to " << fConnectedHost;
+	} else {
+		if (fServerCount > 0)
+			subtitle << fServerCount << " servers loaded";
+		else
+			subtitle << "Loading catalogue\xe2\x80\xa6";
+		if (fHomeCountry.Length() > 0)
+			subtitle << " \xc2\xb7 home: " << fHomeCountry;
+	}
+	fHeader->SetSubtitle(subtitle.String());
 }
 
 
@@ -424,6 +466,13 @@ VPNMapWindow::MessageReceived(BMessage* message)
 		{
 			if (fMap == NULL)
 				break;
+			// Track the bits the header cares about. Missing fields mean
+			// "unchanged" rather than "cleared", except for the connected
+			// host which is the inverse: missing means "no live session".
+			int32 stateValue = (int32)fState;
+			if (message->FindInt32(kFieldState, &stateValue) == B_OK)
+				fState = (VPNState)stateValue;
+
 			// Self pin: only update once both lat and lon arrive (the
 			// daemon omits them on lookup failure rather than sending
 			// zeroes, so a missing field means "still don't know").
@@ -434,6 +483,8 @@ VPNMapWindow::MessageReceived(BMessage* message)
 				message->FindString(kFieldHomeCountry, &country);
 				fMap->SetSelfPosition(lat, lon,
 					country != NULL ? country : "You are here");
+				if (country != NULL)
+					fHomeCountry = country;
 			}
 			// Connected pin: empty string means "no active session"; the
 			// MapView treats unknown hosts as "no arc", so this works
@@ -442,9 +493,12 @@ VPNMapWindow::MessageReceived(BMessage* message)
 			if (message->FindString(kFieldConnectedHost, &connectedHost)
 					== B_OK && connectedHost != NULL) {
 				fMap->SetActiveHost(BString(connectedHost));
+				fConnectedHost = connectedHost;
 			} else {
 				fMap->SetActiveHost(BString(""));
+				fConnectedHost = "";
 			}
+			_RefreshHeader();
 			break;
 		}
 
