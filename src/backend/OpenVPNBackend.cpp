@@ -93,13 +93,29 @@ escape_arg(const BString& value)
 // Synchronously run `ifconfig <args...>` (where the variadic list ends in a
 // trailing NULL) and wait for it to finish. Returns true on a zero exit
 // status. Errors are logged to stderr but don't otherwise propagate -- the
-// caller decides whether to surface them as a connection-level error.
+// caller decides whether to surface them as a connection-level error. When
+// `quiet` is true the child's stderr is redirected to /dev/null, which is
+// what the slot-picking probe wants: tun/N being missing or in a stuck
+// state is an expected outcome there, not a problem to surface.
 static bool
-run_ifconfig(const char* const argv[])
+run_ifconfig(const char* const argv[], bool quiet = false)
 {
 	pid_t pid = -1;
-	int rc = posix_spawnp(&pid, "ifconfig", NULL, NULL,
+	posix_spawn_file_actions_t actions;
+	posix_spawn_file_actions_t* actionsPtr = NULL;
+	if (quiet) {
+		if (posix_spawn_file_actions_init(&actions) == 0
+			&& posix_spawn_file_actions_addopen(&actions, STDERR_FILENO,
+				"/dev/null", O_WRONLY, 0) == 0) {
+			actionsPtr = &actions;
+		}
+	}
+
+	int rc = posix_spawnp(&pid, "ifconfig", actionsPtr, NULL,
 		(char* const*)argv, environ);
+	if (actionsPtr != NULL)
+		posix_spawn_file_actions_destroy(actionsPtr);
+
 	if (rc != 0) {
 		fprintf(stderr,
 			"[OpenVPN] spawn(ifconfig) failed: %s\n", strerror(rc));
@@ -244,15 +260,22 @@ OpenVPNBackend::Connect(const VPNProfile& profile)
 		BString interfaceName;
 		interfaceName << "tun/" << slot;
 
+		// Quiet mode for the probe: an "Invalid Argument" on --delete
+		// just means the slot wasn't in the interface list, and a
+		// "General system error" on up means the kernel left this slot
+		// in a stuck state (typically after a kill -9 of openvpn) and
+		// only a reboot will free it. Both are expected outcomes of the
+		// probe; logging them as ifconfig errors makes a clean startup
+		// look broken.
 		const char* const ifconfigDelete[] = {
 			"ifconfig", "--delete", interfaceName.String(), NULL
 		};
-		run_ifconfig(ifconfigDelete);
+		run_ifconfig(ifconfigDelete, /*quiet=*/true);
 
 		const char* const ifconfigUp[] = {
 			"ifconfig", interfaceName.String(), "up", NULL
 		};
-		if (run_ifconfig(ifconfigUp)) {
+		if (run_ifconfig(ifconfigUp, /*quiet=*/true)) {
 			fTunInterface = interfaceName;
 			fTunNode = "";
 			fTunNode << "/dev/tun/" << slot;
@@ -260,6 +283,8 @@ OpenVPNBackend::Connect(const VPNProfile& profile)
 				fTunInterface.String(), fTunNode.String());
 			break;
 		}
+		printf("[OpenVPN] %s is stuck (kernel-side); trying next slot\n",
+			interfaceName.String());
 	}
 	if (fTunInterface.Length() == 0) {
 		_SetState(VPN_STATE_ERROR,
