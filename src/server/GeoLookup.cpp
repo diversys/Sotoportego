@@ -27,12 +27,16 @@ const char* const kFieldLatitude	= "soto:geo:lat";
 const char* const kFieldLongitude	= "soto:geo:lon";
 
 // ip-api.com supports a plain-text "line" format keyed by the fields you
-// request, so we ask for `country`, `query`, `lat`, `lon` and parse the
-// response as four newline-separated values in the order we requested. This
-// avoids dragging a JSON parser into the daemon.
+// request. We had been using `/line?fields=...` but ip-api ignores the
+// order in the fields= parameter and returns its own canonical ordering,
+// which silently put the lat value where we expected the IP and vice
+// versa -- the self pin ended up in the Pacific. The /json endpoint keys
+// the values by name so the order is irrelevant; the schema is flat and
+// simple enough that we parse it inline rather than pull in a JSON
+// dependency for the daemon.
 static const char* const kHost		= "ip-api.com";
 static const int kPort				= 80;
-static const char* const kPath		= "/line?fields=country,query,lat,lon";
+static const char* const kPath		= "/json?fields=country,query,lat,lon";
 
 // Total wall-clock budget for the request -- connect, write, read. If the
 // VPN's egress blocks port 80 or ip-api throttles us, we'd rather time out
@@ -127,12 +131,70 @@ http_get(const char* host, int port, const char* path)
 		response.Length() - bodyStart - 4);
 	body.Trim();
 
-	// Sanity: ip-api can return a one-word country name. Anything that
-	// starts with '{' looks like JSON (a fields error from upstream); skip
-	// it rather than show garbage in the notification.
-	if (body.Length() == 0 || body[0] == '{' || body[0] == '<')
+	// The /json endpoint always starts with '{'; anything else is an
+	// error page (rate limit HTML, captive-portal interception, etc.).
+	if (body.Length() == 0 || body[0] == '<')
 		return BString();
 	return body;
+}
+
+
+// Find the next char (typically " or }) past the value that starts at
+// `from` in `body`. Returns -1 if not found. Used to extract the substring
+// between two quotes or up to the next , / }.
+static int32
+find_value_end(const BString& body, int32 from, const char* stops)
+{
+	for (int32 i = from; i < body.Length(); i++) {
+		char c = body[i];
+		for (const char* s = stops; *s != '\0'; s++) {
+			if (c == *s)
+				return i;
+		}
+	}
+	return -1;
+}
+
+
+// Extract a string value from a flat JSON object: looks for "key":"...".
+// Returns empty BString on miss. No escape handling; ip-api's `country`
+// and `query` are plain ASCII, so the simple version is enough.
+static BString
+json_string(const BString& body, const char* key)
+{
+	BString needle("\"");
+	needle << key << "\":\"";
+	int32 start = body.FindFirst(needle);
+	if (start < 0)
+		return BString();
+	start += needle.Length();
+	int32 end = find_value_end(body, start, "\"");
+	if (end < 0)
+		return BString();
+	BString out;
+	body.CopyInto(out, start, end - start);
+	return out;
+}
+
+
+// Extract a numeric value: "key":<number>[,}]. Returns true on hit.
+static bool
+json_number(const BString& body, const char* key, float& outValue)
+{
+	BString needle("\"");
+	needle << key << "\":";
+	int32 start = body.FindFirst(needle);
+	if (start < 0)
+		return false;
+	start += needle.Length();
+	int32 end = find_value_end(body, start, ",}");
+	if (end < 0)
+		return false;
+	BString numStr;
+	body.CopyInto(numStr, start, end - start);
+	numStr.Trim();
+	outValue = (float)atof(numStr.String());
+	return true;
 }
 
 
@@ -144,43 +206,21 @@ lookup_thread(void* arg)
 	BString body = http_get(GeoLookup::kHost, GeoLookup::kPort,
 		GeoLookup::kPath);
 
-	// `?fields=country,query,lat,lon` returns four lines in the request
-	// order. Older responses may have only one or two lines; treat any
-	// missing line as "no value" rather than a hard error.
-	BString lines[4];
-	int lineCount = 0;
-	if (body.Length() > 0) {
-		int32 from = 0;
-		for (int i = 0; i < 4; i++) {
-			int32 nl = body.FindFirst('\n', from);
-			if (nl < 0) {
-				body.CopyInto(lines[i], from, body.Length() - from);
-				lines[i].Trim();
-				lineCount = i + 1;
-				break;
-			}
-			body.CopyInto(lines[i], from, nl - from);
-			lines[i].Trim();
-			from = nl + 1;
-			lineCount = i + 1;
-		}
-	}
-
 	BMessage result(args->what);
-	if (lineCount >= 1 && lines[0].Length() > 0)
-		result.AddString(GeoLookup::kFieldCountry, lines[0]);
-	if (lineCount >= 2 && lines[1].Length() > 0)
-		result.AddString(GeoLookup::kFieldQueryIP, lines[1]);
-	if (lineCount >= 3 && lines[2].Length() > 0) {
-		float lat = (float)atof(lines[2].String());
-		// ip-api sends "0" for unknown locations; treat exact-zero as missing
+	if (body.Length() > 0) {
+		BString country = json_string(body, "country");
+		if (country.Length() > 0)
+			result.AddString(GeoLookup::kFieldCountry, country);
+		BString query = json_string(body, "query");
+		if (query.Length() > 0)
+			result.AddString(GeoLookup::kFieldQueryIP, query);
+		float lat = 0.0f;
+		// ip-api sends 0 for unknown locations; treat exact-zero as missing
 		// so we don't claim Null Island as anyone's home.
-		if (lat != 0.0f)
+		if (json_number(body, "lat", lat) && lat != 0.0f)
 			result.AddFloat(GeoLookup::kFieldLatitude, lat);
-	}
-	if (lineCount >= 4 && lines[3].Length() > 0) {
-		float lon = (float)atof(lines[3].String());
-		if (lon != 0.0f)
+		float lon = 0.0f;
+		if (json_number(body, "lon", lon) && lon != 0.0f)
 			result.AddFloat(GeoLookup::kFieldLongitude, lon);
 	}
 	args->target.SendMessage(&result);

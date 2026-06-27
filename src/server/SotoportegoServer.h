@@ -80,6 +80,11 @@ private:
 	// Build a fresh status snapshot from the backend.
 			void				_FillStatus(BMessage* message);
 
+	// Fold home-geo and connected-host fields into a backend-originated
+	// status/stats broadcast so subscribed clients (notably the map) keep
+	// seeing them after the initial GetStatus reply.
+			void				_EnrichForBroadcast(BMessage* message);
+
 	// Build and broadcast a kMsgListProfiles snapshot. Sent to a specific
 	// client on subscribe and to everyone after a profile-store mutation.
 			void				_SendProfileList(BMessenger to) const;

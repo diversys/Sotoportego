@@ -146,11 +146,18 @@ SotoportegoServer::MessageReceived(BMessage* message)
 
 		// --- Events from the backend (we are its observer) -------------
 		// The backend addresses these to us; we fan them out to clients.
+		// The backend only knows about the VPN session itself, so we fold
+		// in the home-geo and connected-host fields here -- otherwise the
+		// map would lose the self pin and the connection arc on every
+		// state change (the only path that carries them today is the
+		// one-shot GetStatus reply via _FillStatus).
 		case kMsgStatusUpdate:
 			_HandleStatusForNotification(message);
+			_EnrichForBroadcast(message);
 			_Broadcast(message);
 			break;
 		case kMsgStatsUpdate:
+			_EnrichForBroadcast(message);
 			_Broadcast(message);
 			break;
 
@@ -341,6 +348,30 @@ SotoportegoServer::_FillStatus(BMessage* message)
 	// vpngate host the user is currently aimed at, if any. The map uses
 	// this to draw the connection arc to the right pin.
 	if (fConnectedHost.Length() > 0)
+		message->AddString(kFieldConnectedHost, fConnectedHost);
+}
+
+
+void
+SotoportegoServer::_EnrichForBroadcast(BMessage* message)
+{
+	// Only adds fields that aren't already present, since the backend may
+	// have set some of them (e.g. localIP/remoteIP). The map-relevant ones
+	// (home position, connected host) the backend never knows about.
+	if (message->FindString(kFieldHomeCountry, (const char**)NULL) != B_OK
+			&& fHomeCountry.Length() > 0)
+		message->AddString(kFieldHomeCountry, fHomeCountry);
+	if (message->FindString(kFieldHomeIP, (const char**)NULL) != B_OK
+			&& fHomeIP.Length() > 0)
+		message->AddString(kFieldHomeIP, fHomeIP);
+	float dummy;
+	if (message->FindFloat(kFieldHomeLat, &dummy) != B_OK
+			&& (fHomeLat != 0.0f || fHomeLon != 0.0f)) {
+		message->AddFloat(kFieldHomeLat, fHomeLat);
+		message->AddFloat(kFieldHomeLon, fHomeLon);
+	}
+	if (message->FindString(kFieldConnectedHost, (const char**)NULL) != B_OK
+			&& fConnectedHost.Length() > 0)
 		message->AddString(kFieldConnectedHost, fConnectedHost);
 }
 
