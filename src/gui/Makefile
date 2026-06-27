@@ -25,6 +25,10 @@ SRCS = \
 	CredentialsWindow.cpp \
 	VaporettoWindow.cpp \
 	DeskbarIcon.cpp \
+	MapView.cpp \
+	VPNMapWindow.cpp \
+	TileCache.cpp \
+	CoastlineData.cpp \
 	../common/OpenVPNConfigParser.cpp \
 	../common/VPNProfile.cpp \
 	../common/VPNState.cpp \
@@ -40,7 +44,7 @@ RSRCS =
 # (used by the .ovpn import flow). $(STDCPPLIBS) pulls in libstdc++/libsupc++
 # — the makefile-engine links with `cc`, which does not add the C++ runtime
 # itself.
-LIBS = be tracker $(STDCPPLIBS)
+LIBS = be tracker translation $(STDCPPLIBS)
 
 # Additional paths to directories following the standard libXXX.so layout.
 LIBPATHS =

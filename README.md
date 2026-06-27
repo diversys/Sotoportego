@@ -212,7 +212,11 @@ src/server/    The daemon (a BApplication / BLooper), ProfileStore
 src/cli/       sotoportego_cli — the test client
 src/gui/       Sotoportego — the native GUI client (HeaderView,
                MainWindow, CredentialsWindow, About, DeskbarIcon
-               replicant, brand HVIF)
+               replicant, brand HVIF). Map foundations live here
+               too: MapView (pan/zoom world map with server pins),
+               TileCache (OSM tile fetcher + on-disk cache), and
+               CoastlineData (offline coastline polylines for the
+               tiles-disabled mode).
 scripts/       verify-tunnel.sh — shell check that the tunnel is
                up *and* actually carrying outbound traffic
 ```
@@ -259,8 +263,14 @@ scripts/       verify-tunnel.sh — shell check that the tunnel is
 
 ## Roadmap
 
+* **VPNGate map browser (in progress).** A pan/zoom world map that
+  plots every public VPNGate server as a clickable pin, with a
+  side-panel showing host / country / ping / score, and a Connect
+  button that fetches the `.ovpn` for the picked server on demand.
+  Foundations are landed (`MapView`, `TileCache`, `CoastlineData`);
+  the daemon-side CSV fetcher, the IP geocoding pass and
+  click-to-connect are tracked as separate work items.
 * WireGuard backend behind the same `VPNBackend` interface.
-* Deskbar replicant with the same brand tile + status dot.
 * IPv6 routing fix-up.
 * Reconnect / backoff handling with a visible countdown.
 * IPSec.

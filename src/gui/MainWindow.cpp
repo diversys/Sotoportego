@@ -36,6 +36,7 @@
 #include "DeskbarIcon.h"
 #include "HeaderView.h"
 #include "OpenVPNConfigParser.h"
+#include "VPNMapWindow.h"
 #include "VPNProfile.h"
 #include "VPNProtocol.h"
 #include "VPNStats.h"
@@ -56,6 +57,7 @@ static const uint32 kMsgVaporetto			= 'gVap';
 static const uint32 kMsgForgetPassword		= 'gFor';
 static const uint32 kMsgInstallDeskbar		= 'gDIn';
 static const uint32 kMsgRemoveDeskbar		= 'gDRm';
+static const uint32 kMsgBrowseOnMap			= 'gMap';
 
 static const char* const kBackendName	= "OpenVPN";
 
@@ -131,6 +133,9 @@ MainWindow::_BuildLayout()
 	menuBar->AddItem(connectionMenu);
 
 	BMenu* toolsMenu = new BMenu("Tools");
+	toolsMenu->AddItem(new BMenuItem("Browse servers on map" B_UTF8_ELLIPSIS,
+		new BMessage(kMsgBrowseOnMap)));
+	toolsMenu->AddSeparatorItem();
 	toolsMenu->AddItem(new BMenuItem("Install Deskbar icon",
 		new BMessage(kMsgInstallDeskbar)));
 	toolsMenu->AddItem(new BMenuItem("Remove Deskbar icon",
@@ -369,6 +374,17 @@ MainWindow::MessageReceived(BMessage* message)
 		case kMsgRemoveDeskbar:
 			_RemoveDeskbarIcon();
 			break;
+		case kMsgBrowseOnMap:
+		{
+			// Open the map browser. B_QUIT_ON_WINDOW_CLOSE in the window's
+			// flags means closing it just disposes of the BWindow; opening
+			// it again from the menu spawns a fresh one. Multiple
+			// instances are harmless because the catalogue is static for
+			// now (will become a daemon-broadcast list later).
+			VPNMapWindow* window = new VPNMapWindow();
+			window->Show();
+			break;
+		}
 		case kMsgProfileSelected:
 		{
 			int32 index = fProfileList->CurrentSelection();
