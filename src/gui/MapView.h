@@ -122,7 +122,11 @@ private:
 			void				_DrawCoastlines();
 			void				_DrawGrid();
 			void				_DrawPins();
-			void				_DrawPin(const ServerPin& pin);
+	// Draw a single pin (count == 1) or a cluster (count > 1, with the
+	// count badged on top of `representative` -- typically the highest-
+	// scored server in the cluster).
+			void				_DrawPin(const ServerPin& representative,
+									int count = 1);
 			void				_DrawSelf();
 			void				_DrawConnectionArc();
 			void				_DrawScaleBar();

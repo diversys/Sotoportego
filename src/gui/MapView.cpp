@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <vector>
 
 #include "CoastlineData.h"
 #include "TileCache.h"
@@ -995,13 +996,73 @@ MapView::_DrawGrid()
 void
 MapView::_DrawPins()
 {
-	for (int32 i = 0; i < fPins.CountItems(); i++)
-		_DrawPin(*fPins.ItemAt(i));
+	// Group pins by integer screen position so the country-centroid
+	// fallback (every server in a country at the same lat/lon) draws as a
+	// single cluster pin with a count badge instead of N overlapping dots.
+	// The representative of each cluster is the highest-scored server, and
+	// the cluster inherits "selected" / "hover" highlighting from any
+	// member.
+	struct Cluster {
+		BPoint		pos;
+		int32		repIndex;	// pin chosen as the badge target
+		int32		count;
+		bool		selected;
+		bool		hover;
+	};
+	std::vector<Cluster> clusters;
+
+	for (int32 i = 0; i < fPins.CountItems(); i++) {
+		const ServerPin* pin = fPins.ItemAt(i);
+		BPoint pos = _LatLonToScreen(pin->latitude, pin->longitude);
+		// Snap to integer pixels so floating-point noise can't split what
+		// the eye reads as the same point.
+		int32 rx = (int32)floorf(pos.x + 0.5f);
+		int32 ry = (int32)floorf(pos.y + 0.5f);
+
+		Cluster* found = NULL;
+		for (size_t c = 0; c < clusters.size(); c++) {
+			if ((int32)floorf(clusters[c].pos.x + 0.5f) == rx
+					&& (int32)floorf(clusters[c].pos.y + 0.5f) == ry) {
+				found = &clusters[c];
+				break;
+			}
+		}
+
+		if (found == NULL) {
+			Cluster fresh;
+			fresh.pos = pos;
+			fresh.repIndex = i;
+			fresh.count = 1;
+			fresh.selected = pin->selected;
+			fresh.hover = (pin == fHoverPin);
+			clusters.push_back(fresh);
+		} else {
+			found->count++;
+			if (pin->selected)
+				found->selected = true;
+			if (pin == fHoverPin)
+				found->hover = true;
+			const ServerPin* current = fPins.ItemAt(found->repIndex);
+			if (pin->score > current->score)
+				found->repIndex = i;
+		}
+	}
+
+	for (size_t c = 0; c < clusters.size(); c++) {
+		const Cluster& cluster = clusters[c];
+		const ServerPin* rep = fPins.ItemAt(cluster.repIndex);
+
+		// Synthesise the representative's flags so a cluster picks up the
+		// highlighting state from any member without mutating the pins.
+		ServerPin shadow = *rep;
+		shadow.selected = cluster.selected;
+		_DrawPin(shadow, cluster.count);
+	}
 }
 
 
 void
-MapView::_DrawPin(const ServerPin& pin)
+MapView::_DrawPin(const ServerPin& pin, int count)
 {
 	BPoint pos = _LatLonToScreen(pin.latitude, pin.longitude);
 	BRect bounds = Bounds();
@@ -1020,6 +1081,12 @@ MapView::_DrawPin(const ServerPin& pin)
 		radius += 1;
 	}
 
+	// Clusters of more than one server grow with the count so they read as
+	// a "many" affordance even from far away. The growth is sub-linear so
+	// 50 servers don't blot out the country they're in.
+	if (count > 1)
+		radius += std::min(6.0f, 1.5f * log2f((float)count));
+
 	// White outer halo so the pin stays readable on any tile colour.
 	SetHighColor(255, 255, 255, 255);
 	FillEllipse(pos, radius + 2, radius + 2);
@@ -1029,6 +1096,28 @@ MapView::_DrawPin(const ServerPin& pin)
 
 	SetHighColor(kPinStroke);
 	StrokeEllipse(pos, radius, radius);
+
+	if (count > 1) {
+		// Count label centred on the pin. Bold and dark so it stays
+		// legible against the pin fill colours.
+		char buf[16];
+		snprintf(buf, sizeof(buf), "%d", count);
+
+		BFont font(be_bold_font);
+		font.SetSize(radius < 12.0f ? 9.0f : 11.0f);
+		SetFont(&font);
+
+		font_height fh;
+		font.GetHeight(&fh);
+		float textWidth = font.StringWidth(buf);
+
+		SetHighColor(kPinStroke);
+		SetDrawingMode(B_OP_OVER);
+		DrawString(buf,
+			BPoint(pos.x - textWidth / 2.0f,
+				pos.y + (fh.ascent - fh.descent) / 2.0f));
+		SetDrawingMode(B_OP_COPY);
+	}
 }
 
 
@@ -1229,16 +1318,21 @@ MapView::_FindPinAt(BPoint where)
 {
 	float radius = kPinRadius + 5;
 
-	// Iterate backwards so the topmost pin wins for overlapping pins.
+	// With country-centroid geocoding many pins land on the same screen
+	// position; collect every hit and return the highest-scored one so a
+	// click on the cluster picks the server the user most likely wants.
+	ServerPin* best = NULL;
 	for (int32 i = fPins.CountItems() - 1; i >= 0; i--) {
 		ServerPin* pin = fPins.ItemAt(i);
 		BPoint pos = _LatLonToScreen(pin->latitude, pin->longitude);
 		float dx = where.x - pos.x;
 		float dy = where.y - pos.y;
-		if (sqrt(dx * dx + dy * dy) <= radius)
-			return pin;
+		if (sqrt(dx * dx + dy * dy) > radius)
+			continue;
+		if (best == NULL || pin->score > best->score)
+			best = pin;
 	}
 
-	return NULL;
+	return best;
 }
 
